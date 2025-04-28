@@ -1,4 +1,7 @@
 streamlit
-requests
 pandas
+numpy
+requests
 plotly
+ta
+python-telegram-bot
