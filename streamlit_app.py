@@ -1,203 +1,156 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
+import plotly.graph_objs as go
 import requests
 import time
-import plotly.graph_objects as go
 
-# ========== Settings ==========
-
-ASSETS = ['ETHUSDT', 'SOLUSDT', 'ADAUSDT', 'BNBUSDT', 'XRPUSDT', 'LTCUSDT']
+# Constants
+BINANCE_API_URL = "https://api.binance.com/api/v3/klines"
+ASSETS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'ADAUSDT', 'BNBUSDT', 'XRPUSDT', 'LTCUSDT']
 CANDLE_INTERVAL = '1m'
 CANDLE_LIMIT = 500
-START_BALANCE = 100
+TRADE_AMOUNT = 100  # Fixed $100
 
-# ========== Helper Functions ==========
+# Streamlit config
+st.set_page_config(page_title="PocketOption Signals", layout="wide")
 
+if "balance" not in st.session_state:
+    st.session_state.balance = 1000
+
+if "trade_history" not in st.session_state:
+    st.session_state.trade_history = []
+
+if "signal_history" not in st.session_state:
+    st.session_state.signal_history = []
+
+# Functions
 def get_binance_candles(symbol, interval='1m', limit=500):
-    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
-    response = requests.get(url)
+    params = {"symbol": symbol, "interval": interval, "limit": limit}
+    response = requests.get(BINANCE_API_URL, params=params)
     data = response.json()
     df = pd.DataFrame(data, columns=[
         'timestamp', 'open', 'high', 'low', 'close', 'volume',
-        'close_time', 'quote_asset_volume', 'number_of_trades',
-        'taker_buy_base', 'taker_buy_quote', 'ignore'
+        'close_time', 'qav', 'num_trades', 'taker_base_vol', 'taker_quote_vol', 'ignore'
     ])
     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-    df['close'] = df['close'].astype(float)
-    df['open'] = df['open'].astype(float)
-    df['high'] = df['high'].astype(float)
-    df['low'] = df['low'].astype(float)
     df.set_index('timestamp', inplace=True)
-    return df[['open', 'high', 'low', 'close']]
+    df = df[['open', 'high', 'low', 'close', 'volume']].astype(float)
+    return df
 
 def compute_indicators(df):
     df['EMA5'] = df['close'].ewm(span=5, adjust=False).mean()
     df['EMA20'] = df['close'].ewm(span=20, adjust=False).mean()
-    df['RSI'] = compute_rsi(df['close'], 14)
+
+    delta = df['close'].diff()
+    up = np.where(delta > 0, delta, 0)
+    down = np.where(delta < 0, -delta, 0)
+    roll_up = pd.Series(up).rolling(14).mean()
+    roll_down = pd.Series(down).rolling(14).mean()
+    rs = roll_up / roll_down
+    df['RSI'] = 100 - (100 / (1 + rs))
+
     return df
 
-def compute_rsi(series, period=14):
-    delta = series.diff()
-    gain = delta.clip(lower=0).rolling(window=period).mean()
-    loss = (-delta.clip(upper=0)).rolling(window=period).mean()
-    rs = gain / loss
-    return 100 - (100 / (1 + rs))
+def detect_rsi_divergence(df):
+    if len(df) < 20:
+        return None
 
-def magic_secret_strategy(df):
-    if len(df) >= 20:
-        if not pd.isna(df['EMA5'].iloc[-1]) and not pd.isna(df['EMA20'].iloc[-1]) and not pd.isna(df['RSI'].iloc[-1]):
-            if df['EMA5'].iloc[-1] > df['EMA20'].iloc[-1] and df['RSI'].iloc[-1] > 50:
-                return 'CALL'
-            elif df['EMA5'].iloc[-1] < df['EMA20'].iloc[-1] and df['RSI'].iloc[-1] < 50:
-                return 'PUT'
+    if (df['RSI'].iloc[-1] > 50) and (df['close'].iloc[-1] > df['close'].iloc[-5]):
+        return 'CALL'
+    elif (df['RSI'].iloc[-1] < 50) and (df['close'].iloc[-1] < df['close'].iloc[-5]):
+        return 'PUT'
+    else:
+        return None
+
+def detect_ema_cross(df):
+    if (df['EMA5'].iloc[-1] > df['EMA20'].iloc[-1]) and (df['EMA5'].iloc[-2] <= df['EMA20'].iloc[-2]):
+        return 'CALL'
+    elif (df['EMA5'].iloc[-1] < df['EMA20'].iloc[-1]) and (df['EMA5'].iloc[-2] >= df['EMA20'].iloc[-2]):
+        return 'PUT'
+    else:
+        return None
+
+def generate_signal(df, strategy):
+    if strategy == 'EMA Cross':
+        return detect_ema_cross(df)
+    elif strategy == 'RSI Divergence':
+        return detect_rsi_divergence(df)
     return None
 
-def ema_cross_only_strategy(df):
-    if len(df) >= 20:
-        if not pd.isna(df['EMA5'].iloc[-1]) and not pd.isna(df['EMA20'].iloc[-1]):
-            if df['EMA5'].iloc[-1] > df['EMA20'].iloc[-1]:
-                return 'CALL'
-            elif df['EMA5'].iloc[-1] < df['EMA20'].iloc[-1]:
-                return 'PUT'
-    return None
-
-def rsi_divergence_strategy(df):
-    if len(df) >= 14:
-        if not pd.isna(df['RSI'].iloc[-1]):
-            if df['RSI'].iloc[-1] < 30:
-                return 'CALL'
-            elif df['RSI'].iloc[-1] > 70:
-                return 'PUT'
-    return None
-
-def generate_signal(df, strategy_name):
-    if strategy_name == "Magic Secret":
-        return magic_secret_strategy(df)
-    elif strategy_name == "EMA Cross":
-        return ema_cross_only_strategy(df)
-    elif strategy_name == "RSI Divergence":
-        return rsi_divergence_strategy(df)
-    return None
-
-def plot_chart(df, asset_name):
+def plot_chart(df, asset):
     fig = go.Figure()
-
-    # Candlestick
     fig.add_trace(go.Candlestick(
         x=df.index,
         open=df['open'],
         high=df['high'],
         low=df['low'],
         close=df['close'],
-        name='Candles'
+        name="Candles"
     ))
-
-    # EMA 5
-    fig.add_trace(go.Scatter(
-        x=df.index, y=df['EMA5'], mode='lines', name='EMA 5', line=dict(color='blue')
-    ))
-
-    # EMA 20
-    fig.add_trace(go.Scatter(
-        x=df.index, y=df['EMA20'], mode='lines', name='EMA 20', line=dict(color='orange')
-    ))
-
-    fig.update_layout(title=f"{asset_name} Live Chart", xaxis_title="Time", yaxis_title="Price")
-
+    fig.add_trace(go.Scatter(x=df.index, y=df['EMA5'], line=dict(color='blue', width=1), name='EMA5'))
+    fig.add_trace(go.Scatter(x=df.index, y=df['EMA20'], line=dict(color='red', width=1), name='EMA20'))
+    fig.update_layout(title=asset, xaxis_rangeslider_visible=False, height=400)
     return fig
 
-# ========== Streamlit App ==========
+# UI
+st.title("Pocket Option Signal Generator")
+selected_assets = st.multiselect("Select Assets", ASSETS, default=ASSETS)
+selected_strategy = st.selectbox("Select Strategy", ['EMA Cross', 'RSI Divergence'])
 
-st.set_page_config(page_title="Pocket Option Signal Sender (Fast)", layout="wide")
-st.title("Pocket Option Signal Sender - FAST Refresh + Live Charts")
+st.metric("Simulated Balance ($)", round(st.session_state.balance, 2))
 
-col1, col2 = st.columns(2)
+chart_placeholders = {asset: st.empty() for asset in selected_assets}
 
-with col1:
-    selected_assets = st.multiselect("Select Assets", ASSETS, default=ASSETS)
+while True:
+    all_signals = []
 
-with col2:
-    selected_strategy = st.selectbox("Select Strategy", ["Magic Secret", "EMA Cross", "RSI Divergence"])
+    for asset in selected_assets:
+        df = get_binance_candles(asset, interval=CANDLE_INTERVAL, limit=CANDLE_LIMIT)
+        df = compute_indicators(df)
 
-trade_amount = st.number_input("Trade Amount per Signal ($)", min_value=1, value=1)
-take_profit = st.number_input("Take Profit ($)", min_value=1, value=10)
-stop_loss = st.number_input("Stop Loss ($)", min_value=1, value=10)
+        signal = generate_signal(df, selected_strategy)
 
-start = st.button("Start")
+        if signal:
+            all_signals.append((asset, signal))
 
-if 'running' not in st.session_state:
-    st.session_state.running = False
-if start:
-    st.session_state.running = True
+            # Save signal history
+            st.session_state.signal_history.append({
+                'Asset': asset,
+                'Strategy': selected_strategy,
+                'Signal': signal,
+                'Time': pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')
+            })
 
-balance = st.session_state.get('balance', START_BALANCE)
-trade_history = st.session_state.get('trade_history', [])
+            # Simulated Trading
+            result = 'WIN' if signal == ('CALL' if df['close'].iloc[-1] > df['close'].iloc[-2] else 'PUT') else 'LOSS'
 
-if st.session_state.running:
-    placeholder_alert = st.empty()
-    placeholder_balance = st.empty()
-    placeholder_profit_chart = st.empty()
-    chart_placeholders = {asset: st.empty() for asset in selected_assets}
-
-    while st.session_state.running:
-        all_signals = []
-
-        for asset in selected_assets:
-            df = get_binance_candles(asset, interval=CANDLE_INTERVAL, limit=CANDLE_LIMIT)
-            df = compute_indicators(df)
-
-            signal = generate_signal(df, selected_strategy)
-
-            if signal:
-                all_signals.append((asset, signal))
-
-                result = 'WIN' if signal == ('CALL' if df['close'].iloc[-1] > df['close'].iloc[-2] else 'PUT') else 'LOSS'
-
-                if result == 'WIN':
-                    balance += trade_amount
-                else:
-                    balance -= trade_amount
-
-                trade_history.append({
-                    'Asset': asset,
-                    'Strategy': selected_strategy,
-                    'Signal': signal,
-                    'Result': result,
-                    'Balance': balance,
-                    'Time': pd.Timestamp.now()
-                })
-
-                st.session_state.balance = balance
-                st.session_state.trade_history = trade_history
-
-            # Live Chart
-            with chart_placeholders[asset].container():
-                st.plotly_chart(plot_chart(df, asset), use_container_width=True)
-
-        with placeholder_alert.container():
-            if all_signals:
-                for asset, sig in all_signals:
-                    st.success(f"[POCKET OPTION] {asset}: {sig}")
+            if result == 'WIN':
+                st.session_state.balance += TRADE_AMOUNT
             else:
-                st.info("No signals at this moment.")
+                st.session_state.balance -= TRADE_AMOUNT
 
-        placeholder_balance.metric("Balance", f"${balance:.2f}")
+            st.session_state.trade_history.append({
+                'Asset': asset,
+                'Strategy': selected_strategy,
+                'Signal': signal,
+                'Result': result,
+                'Balance': st.session_state.balance,
+                'Time': pd.Timestamp.now()
+            })
 
-        if balance - START_BALANCE >= take_profit:
-            st.success(f"Take Profit reached: ${balance}!")
-            st.session_state.running = False
-            break
-        if START_BALANCE - balance >= stop_loss:
-            st.error(f"Stop Loss hit: ${balance}!")
-            st.session_state.running = False
-            break
+        # Live Chart
+        fig = plot_chart(df, asset)
+        chart_placeholders[asset].plotly_chart(fig, use_container_width=True)
 
-        if st.session_state.get('trade_history'):
-            df_profit = pd.DataFrame(st.session_state.trade_history)
-            placeholder_profit_chart.line_chart(df_profit['Balance'])
+    # Display signal history
+    st.markdown("## Signal History")
+    history_df = pd.DataFrame(st.session_state.signal_history)
 
-        time.sleep(5)
+    if not history_df.empty:
+        history_df = history_df.sort_values(by="Time", ascending=False)
+        st.dataframe(history_df[['Time', 'Asset', 'Strategy', 'Signal']], use_container_width=True, height=400)
+    else:
+        st.info("No signals yet.")
 
-if st.session_state.get('trade_history'):
-    st.subheader("Trade History")
-    st.dataframe(pd.DataFrame(st.session_state.trade_history))
+    time.sleep(30)  # Wait 30 seconds before next refresh
