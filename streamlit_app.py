@@ -4,6 +4,7 @@ import numpy as np
 import requests
 import plotly.graph_objects as go
 import datetime
+import io
 import telegram
 from streamlit_autorefresh import st_autorefresh
 
@@ -13,7 +14,7 @@ CANDLE_LIMIT = 500
 BINANCE_URL = "https://api.binance.com/api/v3/klines"
 ASSETS = ["ETHUSDT", "SOLUSDT", "ADAUSDT", "BNBUSDT", "XRPUSDT", "LTCUSDT"]
 
-# --- TELEGRAM SETTINGS (optional) ---
+# --- TELEGRAM SETTINGS ---
 TELEGRAM_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
 TELEGRAM_CHAT_ID = "YOUR_TELEGRAM_CHAT_ID"
 
@@ -49,23 +50,23 @@ def calculate_indicators(df):
     return df
 
 def detect_ema_cross(df):
-    if len(df) < 2:
-        return None
-    if df['EMA5'].iloc[-2] < df['EMA20'].iloc[-2] and df['EMA5'].iloc[-1] > df['EMA20'].iloc[-1]:
-        return "Buy Signal (EMA Cross UP)"
-    elif df['EMA5'].iloc[-2] > df['EMA20'].iloc[-2] and df['EMA5'].iloc[-1] < df['EMA20'].iloc[-1]:
-        return "Sell Signal (EMA Cross DOWN)"
-    return None
+    signals = []
+    for i in range(1, len(df)):
+        if df['EMA5'].iloc[i-1] < df['EMA20'].iloc[i-1] and df['EMA5'].iloc[i] > df['EMA20'].iloc[i]:
+            signals.append((df['timestamp'].iloc[i], "Buy Signal (EMA Cross UP)", df['close'].iloc[i]))
+        elif df['EMA5'].iloc[i-1] > df['EMA20'].iloc[i-1] and df['EMA5'].iloc[i] < df['EMA20'].iloc[i]:
+            signals.append((df['timestamp'].iloc[i], "Sell Signal (EMA Cross DOWN)", df['close'].iloc[i]))
+    return signals
 
 def detect_rsi_divergence(df):
-    if len(df) < 15:
-        return None
-    rsi = df['RSI'].iloc[-1]
-    if rsi < 30:
-        return "Potential Buy (RSI Oversold)"
-    elif rsi > 70:
-        return "Potential Sell (RSI Overbought)"
-    return None
+    signals = []
+    for i in range(len(df)):
+        rsi = df['RSI'].iloc[i]
+        if rsi < 30:
+            signals.append((df['timestamp'].iloc[i], "Potential Buy (RSI Oversold)", df['close'].iloc[i]))
+        elif rsi > 70:
+            signals.append((df['timestamp'].iloc[i], "Potential Sell (RSI Overbought)", df['close'].iloc[i]))
+    return signals
 
 def plot_chart(df, asset):
     fig = go.Figure()
@@ -90,7 +91,7 @@ def plot_chart(df, asset):
         name='EMA20'
     ))
     fig.update_layout(
-        title=f"Live Chart: {asset}",
+        title=f"Live/Backtest Chart: {asset}",
         yaxis_title="Price (USDT)",
         xaxis_rangeslider_visible=False,
         template="plotly_white"
@@ -104,41 +105,104 @@ def send_telegram_alert(message):
     except Exception as e:
         st.warning(f"Failed to send Telegram alert: {e}")
 
-# --- STREAMLIT APP START ---
-st.set_page_config(page_title="Pocket Option Signals", layout="wide")
+def simulate_money_management(signals, initial_balance=1000, bet_size=10, strategy="Flat"):
+    balance = initial_balance
+    results = []
+    last_bet_size = bet_size
 
-# --- AUTO REFRESH ---
+    for idx, (ts, signal, price) in enumerate(signals):
+        win = np.random.choice([True, False], p=[0.55, 0.45])  # Assume 55% win rate (adjustable)
+
+        if win:
+            balance += last_bet_size
+            result = "Win"
+            if strategy == "Martingale":
+                last_bet_size = bet_size  # reset
+        else:
+            balance -= last_bet_size
+            result = "Loss"
+            if strategy == "Martingale":
+                last_bet_size *= 2  # double
+
+        results.append({"Time": ts, "Signal": signal, "Price": price, "Result": result, "Balance": balance})
+
+    return pd.DataFrame(results)
+
+# --- STREAMLIT APP START ---
+st.set_page_config(page_title="Pocket Option Signals + Backtest", layout="wide")
 st_autorefresh(interval=REFRESH_INTERVAL * 1000, key="refresh")
 
-st.title("Pocket Option Trading Signals App")
+st.title("Pocket Option Trading Signals + Backtesting + MM Simulation")
 
-selected_assets = st.sidebar.multiselect("Select Assets", ASSETS, default=ASSETS[:3])
+# --- SIDEBAR ---
+uploaded_file = st.sidebar.file_uploader("Upload historical data (CSV)", type=["csv"])
+
+if st.sidebar.button("Download Sample CSV"):
+    sample_data = {
+        "timestamp": pd.date_range(end=datetime.datetime.now(), periods=500, freq='1T'),
+        "open": np.random.rand(500) * 100,
+        "high": np.random.rand(500) * 100 + 1,
+        "low": np.random.rand(500) * 100 - 1,
+        "close": np.random.rand(500) * 100,
+        "volume": np.random.randint(1, 1000, size=500)
+    }
+    sample_df = pd.DataFrame(sample_data)
+    sample_csv = sample_df.to_csv(index=False).encode('utf-8')
+    st.download_button(label="Click to download", data=sample_csv, file_name="sample_data.csv", mime='text/csv')
+
+selected_assets = st.sidebar.multiselect("Select Live Assets", ASSETS, default=ASSETS[:3])
 selected_strategy = st.sidebar.selectbox("Select Strategy", ["EMA Cross", "RSI Divergence"])
+money_management_strategy = st.sidebar.selectbox("Money Management Strategy", ["Flat", "Martingale"])
 enable_telegram = st.sidebar.checkbox("Enable Telegram Alerts", value=False)
 
-# --- MEMORY ---
 if 'seen_signals' not in st.session_state:
     st.session_state.seen_signals = set()
 
-for asset in selected_assets:
-    df = fetch_candles(asset, limit=CANDLE_LIMIT)
-    if df is None:
-        continue
+# --- HANDLE UPLOAD ---
+if uploaded_file:
+    st.subheader("Backtesting Uploaded Data")
+    df = pd.read_csv(uploaded_file)
+    df['timestamp'] = pd.to_datetime(df['timestamp'])
     df = calculate_indicators(df)
-    signal = None
 
     if selected_strategy == "EMA Cross":
-        signal = detect_ema_cross(df)
+        signals = detect_ema_cross(df)
     elif selected_strategy == "RSI Divergence":
-        signal = detect_rsi_divergence(df)
+        signals = detect_rsi_divergence(df)
 
-    st.subheader(f"Asset: {asset}")
-    st.plotly_chart(plot_chart(df, asset), use_container_width=True)
+    st.plotly_chart(plot_chart(df, "Uploaded CSV"), use_container_width=True)
+    st.subheader(f"Detected {len(signals)} signals in uploaded data:")
 
-    if signal and (asset, signal) not in st.session_state.seen_signals:
-        st.success(f"✅ {signal} detected on {asset}")
-        st.session_state.seen_signals.add((asset, signal))
-        if enable_telegram:
-            send_telegram_alert(f"{signal} on {asset}")
+    results_df = pd.DataFrame(signals, columns=["Time", "Signal", "Price"])
+    st.dataframe(results_df)
 
-st.info("Fetching latest data...")
+    st.subheader("Simulated Money Management Results:")
+    mm_results = simulate_money_management(signals, strategy=money_management_strategy)
+    st.dataframe(mm_results)
+
+    download = results_df.to_csv(index=False).encode('utf-8')
+    st.download_button("Download Signals as CSV", data=download, file_name="signals_results.csv", mime="text/csv")
+
+else:
+    for asset in selected_assets:
+        df = fetch_candles(asset, limit=CANDLE_LIMIT)
+        if df is None:
+            continue
+        df = calculate_indicators(df)
+        if selected_strategy == "EMA Cross":
+            signals = detect_ema_cross(df)
+        elif selected_strategy == "RSI Divergence":
+            signals = detect_rsi_divergence(df)
+
+        st.subheader(f"Asset: {asset}")
+        st.plotly_chart(plot_chart(df, asset), use_container_width=True)
+
+        if signals:
+            latest_signal = signals[-1]
+            if (asset, latest_signal[1]) not in st.session_state.seen_signals:
+                st.success(f"✅ {latest_signal[1]} detected on {asset} at {latest_signal[0]}")
+                st.session_state.seen_signals.add((asset, latest_signal[1]))
+                if enable_telegram:
+                    send_telegram_alert(f"{latest_signal[1]} on {asset} at {latest_signal[0]}")
+
+st.info("Fetching or analyzing latest data...")
