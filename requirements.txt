@@ -1,7 +1,5 @@
 streamlit
+streamlit-autorefresh
 pandas
-numpy
 requests
 plotly
-ta
-python-telegram-bot
