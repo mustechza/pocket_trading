@@ -1,11 +1,11 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import time
 import requests
 import plotly.graph_objects as go
 import datetime
 import telegram
+from streamlit_autorefresh import st_autorefresh
 
 # --- SETTINGS ---
 REFRESH_INTERVAL = 5  # seconds
@@ -61,7 +61,6 @@ def detect_rsi_divergence(df):
     if len(df) < 15:
         return None
     rsi = df['RSI'].iloc[-1]
-    price = df['close'].iloc[-1]
     if rsi < 30:
         return "Potential Buy (RSI Oversold)"
     elif rsi > 70:
@@ -108,40 +107,38 @@ def send_telegram_alert(message):
 # --- STREAMLIT APP START ---
 st.set_page_config(page_title="Pocket Option Signals", layout="wide")
 
+# --- AUTO REFRESH ---
+st_autorefresh(interval=REFRESH_INTERVAL * 1000, key="refresh")
+
 st.title("Pocket Option Trading Signals App")
 
 selected_assets = st.sidebar.multiselect("Select Assets", ASSETS, default=ASSETS[:3])
 selected_strategy = st.sidebar.selectbox("Select Strategy", ["EMA Cross", "RSI Divergence"])
 enable_telegram = st.sidebar.checkbox("Enable Telegram Alerts", value=False)
 
-placeholder = st.empty()
+# --- MEMORY ---
+if 'seen_signals' not in st.session_state:
+    st.session_state.seen_signals = set()
 
-seen_signals = set()
+for asset in selected_assets:
+    df = fetch_candles(asset, limit=CANDLE_LIMIT)
+    if df is None:
+        continue
+    df = calculate_indicators(df)
+    signal = None
 
-while True:
-    with placeholder.container():
-        for asset in selected_assets:
-            df = fetch_candles(asset, limit=CANDLE_LIMIT)
-            if df is None:
-                continue
-            df = calculate_indicators(df)
-            signal = None
+    if selected_strategy == "EMA Cross":
+        signal = detect_ema_cross(df)
+    elif selected_strategy == "RSI Divergence":
+        signal = detect_rsi_divergence(df)
 
-            if selected_strategy == "EMA Cross":
-                signal = detect_ema_cross(df)
-            elif selected_strategy == "RSI Divergence":
-                signal = detect_rsi_divergence(df)
+    st.subheader(f"Asset: {asset}")
+    st.plotly_chart(plot_chart(df, asset), use_container_width=True)
 
-            st.subheader(f"Asset: {asset}")
-            st.plotly_chart(plot_chart(df, asset), use_container_width=True)
+    if signal and (asset, signal) not in st.session_state.seen_signals:
+        st.success(f"✅ {signal} detected on {asset}")
+        st.session_state.seen_signals.add((asset, signal))
+        if enable_telegram:
+            send_telegram_alert(f"{signal} on {asset}")
 
-            if signal and (asset, signal) not in seen_signals:
-                st.success(f"✅ {signal} detected on {asset}")
-                seen_signals.add((asset, signal))
-                if enable_telegram:
-                    send_telegram_alert(f"{signal} on {asset}")
-
-            st.info("Fetching latest data...")
-
-    time.sleep(REFRESH_INTERVAL)
-    st.experimental_rerun()
+st.info("Fetching latest data...")
