@@ -1,160 +1,146 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import requests
-import plotly.graph_objects as go
 import time
-import datetime
+import plotly.graph_objs as go
+import ta
+import telegram
 
-# ---------------- SETTINGS ----------------
+# ========== SETTINGS ==========
 
-TELEGRAM_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
-TELEGRAM_CHAT_ID = "YOUR_CHAT_ID"
+CANDLES = 500
+REFRESH_INTERVAL = 5  # seconds
+TRADE_AMOUNT = 100  # fixed manual trade amount in $
 
-POCKET_ASSETS = ['ETHUSD', 'SOLUSD', 'ADAUSD', 'BNBUSD', 'XRPUSD', 'LTCUSD']
+TELEGRAM_BOT_TOKEN = 'YOUR_TELEGRAM_BOT_TOKEN'
+TELEGRAM_CHAT_ID = 'YOUR_TELEGRAM_CHAT_ID'
 
-# --------------- FUNCTIONS ----------------
+assets = ['ETH', 'SOL', 'ADA', 'BNB', 'XRP', 'LTC']
 
-def fetch_data(asset, timeframe, candles):
-    url = f"https://api.polygon.io/v2/aggs/ticker/X:{asset}/range/{timeframe}/minute/{candles}?adjusted=true&sort=asc&apiKey=YOUR_POLYGON_API_KEY"
-    response = requests.get(url)
-    if response.status_code == 200:
-        data = response.json()['results']
-        df = pd.DataFrame(data)
-        df['timestamp'] = pd.to_datetime(df['t'], unit='ms')
-        df = df.rename(columns={'o': 'open', 'h': 'high', 'l': 'low', 'c': 'close'})
-        return df[['timestamp', 'open', 'high', 'low', 'close']]
-    else:
-        return pd.DataFrame()
+strategy_options = ['EMA Cross', 'RSI Divergence']
+
+asset_symbol_mapping = {
+    'ETH': 'ETHUSDT',
+    'SOL': 'SOLUSDT',
+    'ADA': 'ADAUSDT',
+    'BNB': 'BNBUSDT',
+    'XRP': 'XRPUSDT',
+    'LTC': 'LTCUSDT'
+}
+
+# ========== FUNCTIONS ==========
+
+def send_telegram_alert(message):
+    try:
+        bot = telegram.Bot(token=TELEGRAM_BOT_TOKEN)
+        bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
+    except Exception as e:
+        st.error(f"Telegram Error: {e}")
+
+def fetch_binance_data(symbol):
+    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1m&limit={CANDLES}"
+    try:
+        response = requests.get(url)
+        data = response.json()
+        df = pd.DataFrame(data, columns=[
+            'timestamp', 'open', 'high', 'low', 'close', 'volume',
+            'close_time', 'quote_asset_volume', 'number_of_trades',
+            'taker_buy_base', 'taker_buy_quote', 'ignore'
+        ])
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        df.set_index('timestamp', inplace=True)
+        df['close'] = df['close'].astype(float)
+        df['open'] = df['open'].astype(float)
+        return df
+    except Exception as e:
+        st.warning(f"Fetching data failed, retrying... {e}")
+        return None
 
 def calculate_indicators(df):
     df['EMA5'] = df['close'].ewm(span=5, adjust=False).mean()
     df['EMA20'] = df['close'].ewm(span=20, adjust=False).mean()
-    delta = df['close'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-    RS = gain / loss
-    df['RSI'] = 100 - (100 / (1 + RS))
+    df['RSI'] = ta.momentum.RSIIndicator(df['close'], window=14).rsi()
     return df
 
 def detect_ema_cross(df):
-    if len(df) < 2:
+    if len(df) < 21:
         return None
     if (df['EMA5'].iloc[-1] > df['EMA20'].iloc[-1]) and (df['EMA5'].iloc[-2] <= df['EMA20'].iloc[-2]):
-        return 'CALL'
+        return "BUY"
     if (df['EMA5'].iloc[-1] < df['EMA20'].iloc[-1]) and (df['EMA5'].iloc[-2] >= df['EMA20'].iloc[-2]):
-        return 'PUT'
+        return "SELL"
     return None
 
 def detect_rsi_divergence(df):
     if len(df) < 20:
         return None
     if df['RSI'].iloc[-1] > 70:
-        return 'PUT'
-    if df['RSI'].iloc[-1] < 30:
-        return 'CALL'
+        return "SELL"
+    elif df['RSI'].iloc[-1] < 30:
+        return "BUY"
     return None
 
 def generate_signal(df, strategy):
-    if strategy == "EMA Cross":
+    if strategy == 'EMA Cross':
         return detect_ema_cross(df)
-    elif strategy == "RSI Divergence":
+    elif strategy == 'RSI Divergence':
         return detect_rsi_divergence(df)
     return None
 
-def send_telegram_alert(asset, timeframe, signal):
-    message = f"New Signal:\nAsset: {asset}\nTimeframe: {timeframe}\nSignal: {signal}"
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    data = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
-    requests.post(url, data=data)
-
-def simulate_trade(df, entry_index, direction, candles_ahead):
-    if entry_index + candles_ahead >= len(df):
-        return None
-    entry_price = df['close'].iloc[entry_index]
-    exit_price = df['close'].iloc[entry_index + candles_ahead]
-    if direction == 'CALL':
-        return 'WIN' if exit_price > entry_price else 'LOSS'
-    else:
-        return 'WIN' if exit_price < entry_price else 'LOSS'
-
 def plot_chart(df, asset):
     fig = go.Figure()
-    fig.add_trace(go.Candlestick(x=df['timestamp'],
-                                 open=df['open'],
-                                 high=df['high'],
-                                 low=df['low'],
-                                 close=df['close'],
-                                 name=asset))
-    fig.update_layout(title=f"Live Chart - {asset}", xaxis_rangeslider_visible=False)
+    fig.add_trace(go.Candlestick(
+        x=df.index,
+        open=df['open'],
+        high=df['high'],
+        low=df['low'],
+        close=df['close'],
+        name='Candles'
+    ))
+    fig.add_trace(go.Scatter(x=df.index, y=df['EMA5'], line=dict(color='blue', width=1), name='EMA5'))
+    fig.add_trace(go.Scatter(x=df.index, y=df['EMA20'], line=dict(color='red', width=1), name='EMA20'))
+    fig.update_layout(title=f'{asset} - Live Chart', xaxis_rangeslider_visible=False)
     return fig
 
-# ------------------ UI -------------------
+# ========== STREAMLIT APP ==========
 
-st.set_page_config(page_title="Pocket Option Signal App", layout="wide")
+st.set_page_config(page_title="Pocket Option Signal Scanner", layout="wide")
 
-st.title("Pocket Option Signals - EMA Cross & RSI Divergence")
+st.title("Pocket Option Signal Scanner (Binance Data)")
+selected_asset = st.selectbox("Select Asset", assets)
+selected_strategy = st.selectbox("Select Strategy", strategy_options)
 
-col1, col2, col3 = st.columns(3)
-with col1:
-    selected_asset = st.selectbox("Select Asset", POCKET_ASSETS)
-with col2:
-    selected_strategy = st.selectbox("Select Strategy", ["EMA Cross", "RSI Divergence"])
-with col3:
-    timeframe = st.selectbox("Timeframe", ["1", "5"], format_func=lambda x: f"{x}m")
-
-candle_count = 500
-simulation_candles = st.slider("Candles Ahead for Simulation (Win/Loss Check)", 1, 10, 3)
+placeholder = st.empty()
 
 trade_log = []
 
-balance = 100  # Starting Balance
-
-# ----------------- MAIN LOOP -----------------
-
-status_placeholder = st.empty()
-chart_placeholder = st.empty()
-table_placeholder = st.empty()
-
 while True:
-    df = fetch_data(selected_asset, timeframe, candle_count)
-    if df.empty:
-        status_placeholder.warning("Fetching data failed, retrying...")
-        time.sleep(5)
-        continue
+    with placeholder.container():
+        st.info("Searching for signals...")
+        symbol = asset_symbol_mapping[selected_asset]
+        df = fetch_binance_data(symbol)
+        
+        if df is not None:
+            df = calculate_indicators(df)
+            signal = generate_signal(df, selected_strategy)
 
-    df = calculate_indicators(df)
-    signal = generate_signal(df, selected_strategy)
+            st.plotly_chart(plot_chart(df, selected_asset), use_container_width=True)
 
-    if signal:
-        now = datetime.datetime.now().strftime("%H:%M:%S")
-        result = simulate_trade(df, -1, signal, simulation_candles)
-        if result == 'WIN':
-            balance += 5
-        elif result == 'LOSS':
-            balance -= 5
+            if signal:
+                st.success(f"Signal Found: {signal} {selected_asset}")
+                send_telegram_alert(f"Signal {signal} detected for {selected_asset} on {selected_strategy} strategy!")
+                
+                trade_log.append({
+                    'Asset': selected_asset,
+                    'Strategy': selected_strategy,
+                    'Signal': signal,
+                    'Amount': TRADE_AMOUNT,
+                    'Timestamp': pd.Timestamp.now()
+                })
 
-        trade_log.append({
-            "Time": now,
-            "Asset": selected_asset,
-            "Strategy": selected_strategy,
-            "Signal": signal,
-            "Result": result,
-            "Balance": balance
-        })
+                st.dataframe(pd.DataFrame(trade_log))
+            else:
+                st.info("No Signal Yet...")
 
-        send_telegram_alert(selected_asset, timeframe, signal)
-        status_placeholder.success(f"Signal Found: {signal} ({now})")
-    else:
-        status_placeholder.info("Searching for signals...")
-
-    chart_placeholder.plotly_chart(plot_chart(df, selected_asset), use_container_width=True)
-
-    if trade_log:
-        log_df = pd.DataFrame(trade_log)
-        winrate = (log_df['Result'] == 'WIN').mean() * 100
-        table_placeholder.dataframe(log_df)
-        st.metric("Winrate %", f"{winrate:.2f}%")
-        st.metric("Current Balance", f"${balance:.2f}")
-
-    time.sleep(5)  # Auto-refresh every 5 seconds
-    st.experimental_rerun()
+    time.sleep(REFRESH_INTERVAL)
