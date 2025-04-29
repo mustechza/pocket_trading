@@ -5,3 +5,4 @@ requests
 plotly
 python-telegram-bot
 streamlit-autorefresh
+streamlit-extras
