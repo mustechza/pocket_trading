@@ -4,12 +4,6 @@ import numpy as np
 import requests
 import plotly.graph_objects as go
 import datetime
-import io
-import telegram
-import time
-import hmac
-import hashlib
-from urllib.parse import urlencode
 from streamlit_autorefresh import st_autorefresh
 
 # --- SETTINGS ---
@@ -18,36 +12,22 @@ CANDLE_LIMIT = 500
 BINANCE_URL = "https://api.binance.com/api/v3/klines"
 ASSETS = ["ETHUSDT", "SOLUSDT", "ADAUSDT", "BNBUSDT", "XRPUSDT", "LTCUSDT"]
 
-# --- TELEGRAM SETTINGS ---
-TELEGRAM_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
-TELEGRAM_CHAT_ID = "YOUR_TELEGRAM_CHAT_ID"
-
 # --- FUNCTIONS ---
 
-def fetch_candles(symbol, interval="1m", limit=500, api_key=None, api_secret=None):
+def fetch_candles(symbol, interval="1m", limit=500):
     try:
         params = {"symbol": symbol, "interval": interval, "limit": limit}
-        headers = {}
-        if api_key and api_secret:
-            query_string = urlencode(params)
-            timestamp = int(time.time() * 1000)
-            query_string += f"&timestamp={timestamp}"
-            signature = hmac.new(api_secret.encode(), query_string.encode(), hashlib.sha256).hexdigest()
-            query_string += f"&signature={signature}"
-            headers["X-MBX-APIKEY"] = api_key
-            url = f"{BINANCE_URL}?{query_string}"
-        else:
-            url = f"{BINANCE_URL}?{urlencode(params)}"
-
-        res = requests.get(url, headers=headers, timeout=10)
-        data = res.json()
+        response = requests.get(BINANCE_URL, params=params, timeout=10)
+        data = response.json()
         df = pd.DataFrame(data, columns=[
             'timestamp', 'open', 'high', 'low', 'close', 'volume',
             'close_time', 'qav', 'num_trades', 'taker_base_vol', 'taker_quote_vol', 'ignore'
         ])
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-        for col in ['open', 'high', 'low', 'close']:
-            df[col] = df[col].astype(float)
+        df['open'] = df['open'].astype(float)
+        df['high'] = df['high'].astype(float)
+        df['low'] = df['low'].astype(float)
+        df['close'] = df['close'].astype(float)
         return df
     except Exception as e:
         st.warning(f"Fetching data failed: {e}")
@@ -112,20 +92,13 @@ def plot_chart(df, asset):
     )
     return fig
 
-def send_telegram_alert(message):
-    try:
-        bot = telegram.Bot(token=TELEGRAM_TOKEN)
-        bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
-    except Exception as e:
-        st.warning(f"Failed to send Telegram alert: {e}")
-
 def simulate_money_management(signals, initial_balance=1000, bet_size=10, strategy="Flat"):
     balance = initial_balance
     results = []
     last_bet_size = bet_size
 
-    for idx, (ts, signal, price) in enumerate(signals):
-        win = np.random.choice([True, False], p=[0.55, 0.45])  # Assume 55% win rate
+    for ts, signal, price in signals:
+        win = np.random.choice([True, False], p=[0.55, 0.45])  # 55% win chance
 
         if win:
             balance += last_bet_size
@@ -149,10 +122,6 @@ st_autorefresh(interval=REFRESH_INTERVAL * 1000, key="refresh")
 st.title("Pocket Option Trading Signals + Backtesting + MM Simulation")
 
 # --- SIDEBAR ---
-st.sidebar.header("Binance API")
-api_key = st.sidebar.text_input("API Key", type="password")
-api_secret = st.sidebar.text_input("API Secret", type="password")
-
 uploaded_file = st.sidebar.file_uploader("Upload historical data (CSV)", type=["csv"])
 
 if st.sidebar.button("Download Sample CSV"):
@@ -165,13 +134,11 @@ if st.sidebar.button("Download Sample CSV"):
         "volume": np.random.randint(1, 1000, size=500)
     }
     sample_df = pd.DataFrame(sample_data)
-    sample_csv = sample_df.to_csv(index=False).encode('utf-8')
-    st.download_button(label="Click to download", data=sample_csv, file_name="sample_data.csv", mime='text/csv')
+    st.download_button("Click to download", data=sample_df.to_csv(index=False), file_name="sample_data.csv", mime='text/csv')
 
 selected_assets = st.sidebar.multiselect("Select Live Assets", ASSETS, default=ASSETS[:3])
 selected_strategy = st.sidebar.selectbox("Select Strategy", ["EMA Cross", "RSI Divergence"])
 money_management_strategy = st.sidebar.selectbox("Money Management Strategy", ["Flat", "Martingale"])
-enable_telegram = st.sidebar.checkbox("Enable Telegram Alerts", value=False)
 
 if 'seen_signals' not in st.session_state:
     st.session_state.seen_signals = set()
@@ -189,20 +156,18 @@ if uploaded_file:
         signals = detect_rsi_divergence(df)
 
     st.plotly_chart(plot_chart(df, "Uploaded CSV"), use_container_width=True)
-    st.subheader(f"Detected {len(signals)} signals in uploaded data:")
-    results_df = pd.DataFrame(signals, columns=["Time", "Signal", "Price"])
-    st.dataframe(results_df)
+    st.subheader(f"Detected {len(signals)} signals:")
+    st.dataframe(pd.DataFrame(signals, columns=["Time", "Signal", "Price"]))
 
     st.subheader("Simulated Money Management Results:")
-    mm_results = simulate_money_management(signals, strategy=money_management_strategy)
-    st.dataframe(mm_results)
+    mm_df = simulate_money_management(signals, strategy=money_management_strategy)
+    st.dataframe(mm_df)
 
-    download = results_df.to_csv(index=False).encode('utf-8')
-    st.download_button("Download Signals as CSV", data=download, file_name="signals_results.csv", mime="text/csv")
+    st.download_button("Download Signals as CSV", data=pd.DataFrame(signals).to_csv(index=False), file_name="signals_results.csv", mime="text/csv")
 
 else:
     for asset in selected_assets:
-        df = fetch_candles(asset, limit=CANDLE_LIMIT, api_key=api_key, api_secret=api_secret)
+        df = fetch_candles(asset, limit=CANDLE_LIMIT)
         if df is None:
             continue
         df = calculate_indicators(df)
@@ -217,9 +182,7 @@ else:
         if signals:
             latest_signal = signals[-1]
             if (asset, latest_signal[1]) not in st.session_state.seen_signals:
-                st.success(f"✅ {latest_signal[1]} detected on {asset} at {latest_signal[0]}")
+                st.success(f"{latest_signal[1]} on {asset} at {latest_signal[0]}")
                 st.session_state.seen_signals.add((asset, latest_signal[1]))
-                if enable_telegram:
-                    send_telegram_alert(f"{latest_signal[1]} on {asset} at {latest_signal[0]}")
 
 st.info("Fetching or analyzing latest data...")
