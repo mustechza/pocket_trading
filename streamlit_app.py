@@ -1,3 +1,5 @@
+# Updated Streamlit App with Audio Alerts, Custom EMA, TP/SL Logic, Real-Time Dashboard
+
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -13,7 +15,6 @@ BINANCE_URL = "https://api.binance.com/api/v3/klines"
 ASSETS = ["ETHUSDT", "SOLUSDT", "ADAUSDT", "BNBUSDT", "XRPUSDT", "LTCUSDT"]
 
 # --- FUNCTIONS ---
-
 def fetch_candles(symbol, interval="1m", limit=500):
     try:
         params = {"symbol": symbol, "interval": interval, "limit": limit}
@@ -33,36 +34,27 @@ def fetch_candles(symbol, interval="1m", limit=500):
         st.warning(f"Fetching data failed: {e}")
         return None
 
-def calculate_indicators(df):
-    df['EMA5'] = df['close'].ewm(span=5, adjust=False).mean()
-    df['EMA20'] = df['close'].ewm(span=20, adjust=False).mean()
-    
-    # RSI
+def calculate_indicators(df, short=5, long=20):
+    df['EMA_short'] = df['close'].ewm(span=short, adjust=False).mean()
+    df['EMA_long'] = df['close'].ewm(span=long, adjust=False).mean()
     delta = df['close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
     rs = gain / loss
     df['RSI'] = 100 - (100 / (1 + rs))
-    
-    # MACD
     df['MACD'] = df['close'].ewm(span=12, adjust=False).mean() - df['close'].ewm(span=26, adjust=False).mean()
     df['MACD_signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
-
-    # Bollinger Bands
     df['BB_upper'] = df['close'].rolling(window=20).mean() + (df['close'].rolling(window=20).std() * 2)
     df['BB_lower'] = df['close'].rolling(window=20).mean() - (df['close'].rolling(window=20).std() * 2)
-    
-    # Stochastic Oscillator
     df['Stochastic'] = (df['close'] - df['low'].rolling(window=14).min()) / (df['high'].rolling(window=14).max() - df['low'].rolling(window=14).min()) * 100
-    
     return df
 
 def detect_ema_cross(df):
     signals = []
     for i in range(1, len(df)):
-        if df['EMA5'].iloc[i-1] < df['EMA20'].iloc[i-1] and df['EMA5'].iloc[i] > df['EMA20'].iloc[i]:
+        if df['EMA_short'].iloc[i-1] < df['EMA_long'].iloc[i-1] and df['EMA_short'].iloc[i] > df['EMA_long'].iloc[i]:
             signals.append((df['timestamp'].iloc[i], "Buy Signal (EMA Cross UP)", df['close'].iloc[i]))
-        elif df['EMA5'].iloc[i-1] > df['EMA20'].iloc[i-1] and df['EMA5'].iloc[i] < df['EMA20'].iloc[i]:
+        elif df['EMA_short'].iloc[i-1] > df['EMA_long'].iloc[i-1] and df['EMA_short'].iloc[i] < df['EMA_long'].iloc[i]:
             signals.append((df['timestamp'].iloc[i], "Sell Signal (EMA Cross DOWN)", df['close'].iloc[i]))
     return signals
 
@@ -76,111 +68,69 @@ def detect_rsi_divergence(df):
             signals.append((df['timestamp'].iloc[i], "Potential Sell (RSI Overbought)", df['close'].iloc[i]))
     return signals
 
-def detect_macd_cross(df):
-    signals = []
-    for i in range(1, len(df)):
-        if df['MACD'].iloc[i-1] < df['MACD_signal'].iloc[i-1] and df['MACD'].iloc[i] > df['MACD_signal'].iloc[i]:
-            signals.append((df['timestamp'].iloc[i], "Buy Signal (MACD Cross UP)", df['close'].iloc[i]))
-        elif df['MACD'].iloc[i-1] > df['MACD_signal'].iloc[i-1] and df['MACD'].iloc[i] < df['MACD_signal'].iloc[i]:
-            signals.append((df['timestamp'].iloc[i], "Sell Signal (MACD Cross DOWN)", df['close'].iloc[i]))
-    return signals
-
-def detect_bollinger_bands(df):
-    signals = []
-    for i in range(len(df)):
-        if df['close'].iloc[i] < df['BB_lower'].iloc[i]:
-            signals.append((df['timestamp'].iloc[i], "Buy Signal (BB Bounce)", df['close'].iloc[i]))
-        elif df['close'].iloc[i] > df['BB_upper'].iloc[i]:
-            signals.append((df['timestamp'].iloc[i], "Sell Signal (BB Bounce)", df['close'].iloc[i]))
-    return signals
-
-def detect_stochastic(df):
-    signals = []
-    for i in range(len(df)):
-        stochastic = df['Stochastic'].iloc[i]
-        if stochastic < 20:
-            signals.append((df['timestamp'].iloc[i], "Potential Buy (Stochastic Oversold)", df['close'].iloc[i]))
-        elif stochastic > 80:
-            signals.append((df['timestamp'].iloc[i], "Potential Sell (Stochastic Overbought)", df['close'].iloc[i]))
-    return signals
+def simulate_money_management(signals, df, initial_balance=1000, bet_size=10, strategy="Flat", tp_pct=2.0, sl_pct=1.0):
+    balance = initial_balance
+    results = []
+    for ts, signal, price in signals:
+        entry_price = price
+        exit_price = None
+        result = "Open"
+        i = df.index[df['timestamp'] == ts][0]
+        for j in range(i + 1, min(i + 10, len(df))):
+            high = df['high'].iloc[j]
+            low = df['low'].iloc[j]
+            if "Buy" in signal:
+                tp = entry_price * (1 + tp_pct / 100)
+                sl = entry_price * (1 - sl_pct / 100)
+                if high >= tp:
+                    exit_price = tp
+                    result = "Win"
+                    break
+                elif low <= sl:
+                    exit_price = sl
+                    result = "Loss"
+                    break
+            elif "Sell" in signal:
+                tp = entry_price * (1 - tp_pct / 100)
+                sl = entry_price * (1 + sl_pct / 100)
+                if low <= tp:
+                    exit_price = tp
+                    result = "Win"
+                    break
+                elif high >= sl:
+                    exit_price = sl
+                    result = "Loss"
+                    break
+        if result == "Win":
+            balance += bet_size
+        elif result == "Loss":
+            balance -= bet_size
+        results.append({"Time": ts, "Signal": signal, "Entry": entry_price, "Exit": exit_price, "Result": result, "Balance": balance})
+    return pd.DataFrame(results)
 
 def plot_chart(df, asset):
     fig = go.Figure()
-    fig.add_trace(go.Candlestick(
-        x=df['timestamp'],
-        open=df['open'],
-        high=df['high'],
-        low=df['low'],
-        close=df['close'],
-        name='Candles'
-    ))
-    fig.add_trace(go.Scatter(
-        x=df['timestamp'],
-        y=df['EMA5'],
-        line=dict(color='blue', width=1),
-        name='EMA5'
-    ))
-    fig.add_trace(go.Scatter(
-        x=df['timestamp'],
-        y=df['EMA20'],
-        line=dict(color='red', width=1),
-        name='EMA20'
-    ))
-    fig.update_layout(
-        title=f"Live/Backtest Chart: {asset}",
-        yaxis_title="Price (USDT)",
-        xaxis_rangeslider_visible=False,
-        template="plotly_white"
-    )
+    fig.add_trace(go.Candlestick(x=df['timestamp'], open=df['open'], high=df['high'], low=df['low'], close=df['close'], name='Candles'))
+    fig.add_trace(go.Scatter(x=df['timestamp'], y=df['EMA_short'], line=dict(color='blue', width=1), name='EMA Short'))
+    fig.add_trace(go.Scatter(x=df['timestamp'], y=df['EMA_long'], line=dict(color='red', width=1), name='EMA Long'))
+    fig.update_layout(title=f"Live/Backtest Chart: {asset}", yaxis_title="Price (USDT)", xaxis_rangeslider_visible=False, template="plotly_white")
     return fig
 
-def simulate_money_management(signals, initial_balance=1000, bet_size=10, strategy="Flat"):
-    balance = initial_balance
-    results = []
-    last_bet_size = bet_size
-
-    for ts, signal, price in signals:
-        win = np.random.choice([True, False], p=[0.55, 0.45])  # 55% win chance
-
-        if win:
-            balance += last_bet_size
-            result = "Win"
-            if strategy == "Martingale":
-                last_bet_size = bet_size
-        else:
-            balance -= last_bet_size
-            result = "Loss"
-            if strategy == "Martingale":
-                last_bet_size *= 2
-
-        results.append({"Time": ts, "Signal": signal, "Price": price, "Result": result, "Balance": balance})
-
-    return pd.DataFrame(results)
-
 # --- STREAMLIT APP START ---
-st.set_page_config(page_title="Pocket Option Signals + Backtesting + MM Simulation", layout="wide")
+st.set_page_config(page_title="Trading Signals + Backtesting + Alerts", layout="wide")
 st_autorefresh(interval=REFRESH_INTERVAL * 1000, key="refresh")
 
-st.title("Pocket Option Trading Signals + Backtesting + MM Simulation")
+st.title("Trading Signals + Backtesting + Alerts")
 
 # --- SIDEBAR ---
 uploaded_file = st.sidebar.file_uploader("Upload historical data (CSV)", type=["csv"])
-
-if st.sidebar.button("Download Sample CSV"):
-    sample_data = {
-        "timestamp": pd.date_range(end=datetime.datetime.now(), periods=500, freq='1T'),
-        "open": np.random.rand(500) * 100,
-        "high": np.random.rand(500) * 100 + 1,
-        "low": np.random.rand(500) * 100 - 1,
-        "close": np.random.rand(500) * 100,
-        "volume": np.random.randint(1, 1000, size=500)
-    }
-    sample_df = pd.DataFrame(sample_data)
-    st.download_button("Click to download", data=sample_df.to_csv(index=False), file_name="sample_data.csv", mime='text/csv')
-
 selected_assets = st.sidebar.multiselect("Select Live Assets", ASSETS, default=ASSETS[:3])
-selected_strategy = st.sidebar.selectbox("Select Strategy", ["EMA Cross", "RSI Divergence", "MACD Cross", "Bollinger Band Bounce", "Stochastic Oscillator", "EMA + RSI Combined"])
-money_management_strategy = st.sidebar.selectbox("Money Management Strategy", ["Flat", "Martingale"])
+selected_strategy = st.sidebar.selectbox("Select Strategy", ["EMA Cross", "RSI Divergence", "EMA + RSI Combined"])
+money_management_strategy = st.sidebar.selectbox("Money Management Strategy", ["Flat"])
+take_profit_pct = st.sidebar.number_input("Take Profit %", min_value=0.1, max_value=20.0, value=2.0)
+stop_loss_pct = st.sidebar.number_input("Stop Loss %", min_value=0.1, max_value=20.0, value=1.0)
+ema_short = st.sidebar.number_input("Short EMA Period", min_value=1, max_value=50, value=5)
+ema_long = st.sidebar.number_input("Long EMA Period", min_value=5, max_value=100, value=20)
 
 if 'seen_signals' not in st.session_state:
     st.session_state.seen_signals = set()
@@ -190,27 +140,32 @@ if uploaded_file:
     st.subheader("Backtesting Uploaded Data")
     df = pd.read_csv(uploaded_file)
     df['timestamp'] = pd.to_datetime(df['timestamp'])
-    df = calculate_indicators(df)
+    df = calculate_indicators(df, short=ema_short, long=ema_long)
 
-    # --- SIGNAL DETECTION ---
     if selected_strategy == "EMA Cross":
         signals = detect_ema_cross(df)
     elif selected_strategy == "RSI Divergence":
         signals = detect_rsi_divergence(df)
-    elif selected_strategy == "MACD Cross":
-        signals = detect_macd_cross(df)
-    elif selected_strategy == "Bollinger Band Bounce":
-        signals = detect_bollinger_bands(df)
-    elif selected_strategy == "Stochastic Oscillator":
-        signals = detect_stochastic(df)
     elif selected_strategy == "EMA + RSI Combined":
-        signals = detect_ema_cross(df) + detect_rsi_divergence(df)
+        signals = [s for s in detect_ema_cross(df) if s in detect_rsi_divergence(df)]
 
-    # --- BACKTESTING AND PERFORMANCE ---
-    performance = simulate_money_management(signals, strategy=money_management_strategy)
+    performance = simulate_money_management(signals, df, strategy=money_management_strategy, tp_pct=take_profit_pct, sl_pct=stop_loss_pct)
     st.dataframe(performance)
 
-    # --- CHART ---
+    if not performance.empty:
+        win_rate = (performance['Result'] == 'Win').mean() * 100
+        final_balance = performance['Balance'].iloc[-1]
+        total_signals = len(performance)
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Win Rate", f"{win_rate:.2f}%")
+        col2.metric("Total Signals", total_signals)
+        col3.metric("Final Balance", f"${final_balance:.2f}")
+
     fig = plot_chart(df, selected_assets[0])
     st.plotly_chart(fig)
-    
+
+    new_signals = [sig for sig in signals if sig not in st.session_state.seen_signals]
+    for ts, signal, price in new_signals:
+        st.toast(f"{ts} - {signal} at ${price:.2f}", icon="⚡")
+        st.audio("https://actions.google.com/sounds/v1/alarms/beep_short.ogg", autoplay=True)
+        st.session_state.seen_signals.add((ts, signal, price))
