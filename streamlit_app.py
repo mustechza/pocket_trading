@@ -5,6 +5,7 @@ import requests
 import plotly.graph_objects as go
 import datetime
 from streamlit_autorefresh import st_autorefresh
+from streamlit_extras.badges import badge
 
 # --- SETTINGS ---
 REFRESH_INTERVAL = 5  # seconds
@@ -161,12 +162,21 @@ if uploaded_file:
 
     st.subheader("Simulated Money Management Results:")
     mm_df = simulate_money_management(signals, strategy=money_management_strategy)
+
+    # Track win rate over time
+    mm_df['Wins'] = (mm_df['Result'] == 'Win').astype(int)
+    mm_df['Cumulative Wins'] = mm_df['Wins'].cumsum()
+    mm_df['Trade #'] = np.arange(1, len(mm_df) + 1)
+    mm_df['Win Rate %'] = (mm_df['Cumulative Wins'] / mm_df['Trade #']) * 100
+
     st.dataframe(mm_df)
+    st.line_chart(mm_df.set_index("Trade #")["Win Rate %"])
 
     st.download_button("Download Signals as CSV", data=pd.DataFrame(signals).to_csv(index=False), file_name="signals_results.csv", mime="text/csv")
 
 else:
-    for asset in selected_assets:
+    cols = st.columns(len(selected_assets))
+    for i, asset in enumerate(selected_assets):
         df = fetch_candles(asset, limit=CANDLE_LIMIT)
         if df is None:
             continue
@@ -176,13 +186,18 @@ else:
         elif selected_strategy == "RSI Divergence":
             signals = detect_rsi_divergence(df)
 
-        st.subheader(f"Asset: {asset}")
-        st.plotly_chart(plot_chart(df, asset), use_container_width=True)
+        with cols[i]:
+            st.subheader(f"{asset}")
+            st.plotly_chart(plot_chart(df, asset), use_container_width=True)
 
-        if signals:
-            latest_signal = signals[-1]
-            if (asset, latest_signal[1]) not in st.session_state.seen_signals:
-                st.success(f"{latest_signal[1]} on {asset} at {latest_signal[0]}")
-                st.session_state.seen_signals.add((asset, latest_signal[1]))
+            if signals:
+                latest_signal = signals[-1]
+                if (asset, latest_signal[1]) not in st.session_state.seen_signals:
+                    color = "green" if "Buy" in latest_signal[1] else "red"
+                    st.markdown(f"**Latest Signal**: `{latest_signal[1]}`")
+                    st.success(f"@ {latest_signal[0]} | Price: {latest_signal[2]:.4f}")
+                    st.session_state.seen_signals.add((asset, latest_signal[1]))
+                    badge(type=color, name=latest_signal[1].split()[0])
 
 st.info("Fetching or analyzing latest data...")
+    
