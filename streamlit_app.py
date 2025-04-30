@@ -1,4 +1,6 @@
 import streamlit as st
+st.set_page_config(layout="wide")
+
 import pandas as pd
 import numpy as np
 import requests
@@ -7,7 +9,8 @@ import datetime
 from streamlit_autorefresh import st_autorefresh
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
-import streamlit.components.v1 as components
+import ta
+
 
 # --- MUST BE FIRST STREAMLIT COMMAND ---
 st.set_page_config(layout="wide")
