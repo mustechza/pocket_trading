@@ -11,7 +11,7 @@ import ta  # TA-Lib (pandas-ta alternative if needed)
 
 
 
-
+VALID_SYMBOLS = ["ETHUSDT", "SOLUSDT", "ADAUSDT", "BNBUSDT", "XRPUSDT", "LTCUSDT"]
 
 # --- SETTINGS ---
 REFRESH_INTERVAL = 10  # seconds
