@@ -60,7 +60,7 @@ def calculate_indicators(df):
     return df
 
 def generate_signal(timestamp, signal_type, price):
-    duration = 2 if "Buy" in signal_type else 1
+    duration = 5 if "Buy" in signal_type else 5
     return {
         "Time": timestamp,
         "Signal": signal_type,
