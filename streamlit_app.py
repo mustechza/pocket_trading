@@ -9,14 +9,7 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 import ta  # TA-Lib (pandas-ta alternative if needed)
 
-def get_valid_symbols():
-    try:
-        response = requests.get("https://api.binance.com/api/v3/exchangeInfo", timeout=10)
-        data = response.json()
-        return [s["symbol"] for s in data["symbols"]]
-    except Exception as e:
-        st.warning(f"Failed to fetch Binance symbols: {e}")
-        return []
+
 
 
 
@@ -181,9 +174,7 @@ st_autorefresh(interval=REFRESH_INTERVAL * 1000, key="refresh")
 
 st.title("📈 Pocket Option Signals | Live + Backtest + Money Management")
 
-# --- VALID SYMBOLS ---
-VALID_SYMBOLS = get_valid_symbols()
-ASSETS = [s for s in ASSETS if s in VALID_SYMBOLS]  # Filter initial asset list
+
 
 # SIDEBAR
 uploaded_file = st.sidebar.file_uploader("Upload historical data (CSV)", type=["csv"])
