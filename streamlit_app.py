@@ -199,8 +199,21 @@ if uploaded_file:
 
 # --- LIVE SIGNALS ---
 st.subheader("📡 Live Market Signal Detection")
-for asset in selected_assets:
-    df_live = fetch_candles(asset)
+if not selected_assets:
+    st.warning("⚠️ Please select at least one asset.")
+else:
+    for asset in selected_assets:
+        if not asset:
+            continue
+        df_live = fetch_candles(asset)
+        if df_live is not None:
+            df_live = calculate_indicators(df_live)
+            live_signals = detect_signals(df_live, selected_strategy) if selected_strategy != "ML Model (Random Forest)" else []
+            if live_signals:
+                st.markdown(f"### {asset}")
+                st.dataframe(pd.DataFrame(live_signals[-5:]))
+                st.plotly_chart(plot_chart(df_live, asset), use_container_width=True)
+
     if df_live is not None:
         df_live = calculate_indicators(df_live)
         live_signals = detect_signals(df_live, selected_strategy) if selected_strategy != "ML Model (Random Forest)" else []
