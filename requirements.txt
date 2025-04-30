@@ -3,5 +3,6 @@ pandas
 numpy
 requests
 plotly
-streamlit-autorefresh
 scikit-learn
+streamlit-autorefresh
+ta
