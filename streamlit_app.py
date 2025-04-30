@@ -7,14 +7,14 @@ import datetime
 from streamlit_autorefresh import st_autorefresh
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
-import ta  # Using pandas-ta or TA-Lib alternatives
+import ta
+import streamlit.components.v1 as components
 
-# --- CONSTANTS ---
-VALID_SYMBOLS = ["ETHUSDT", "SOLUSDT", "ADAUSDT", "BNBUSDT", "XRPUSDT", "LTCUSDT"]
-ASSETS = VALID_SYMBOLS
+# --- SETTINGS ---
 REFRESH_INTERVAL = 10  # seconds
 CANDLE_LIMIT = 500
 BINANCE_URL = "https://api.binance.com/api/v3/klines"
+ASSETS = ["ETHUSDT", "SOLUSDT", "ADAUSDT", "BNBUSDT", "XRPUSDT", "LTCUSDT"]
 
 # --- FUNCTIONS ---
 
@@ -39,25 +39,25 @@ def calculate_indicators(df):
     df['EMA20'] = df['close'].ewm(span=20, adjust=False).mean()
 
     delta = df['close'].diff()
-    gain = delta.where(delta > 0, 0).rolling(window=14).mean()
-    loss = -delta.where(delta < 0, 0).rolling(window=14).mean()
+    gain = delta.where(delta > 0, 0).rolling(14).mean()
+    loss = -delta.where(delta < 0, 0).rolling(14).mean()
     rs = gain / loss
     df['RSI'] = 100 - (100 / (1 + rs))
 
-    df['MACD'] = df['close'].ewm(span=12, adjust=False).mean() - df['close'].ewm(span=26, adjust=False).mean()
-    df['MACD_signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
+    df['MACD'] = df['close'].ewm(span=12).mean() - df['close'].ewm(span=26).mean()
+    df['MACD_signal'] = df['MACD'].ewm(span=9).mean()
 
-    df['BB_upper'] = df['close'].rolling(window=20).mean() + 2 * df['close'].rolling(window=20).std()
-    df['BB_lower'] = df['close'].rolling(window=20).mean() - 2 * df['close'].rolling(window=20).std()
+    df['BB_upper'] = df['close'].rolling(20).mean() + 2 * df['close'].rolling(20).std()
+    df['BB_lower'] = df['close'].rolling(20).mean() - 2 * df['close'].rolling(20).std()
 
-    low_min = df['low'].rolling(window=14).min()
-    high_max = df['high'].rolling(window=14).max()
+    low_min = df['low'].rolling(14).min()
+    high_max = df['high'].rolling(14).max()
     df['Stochastic'] = (df['close'] - low_min) / (high_max - low_min) * 100
 
     return df
 
 def generate_signal(timestamp, signal_type, price):
-    duration = 5 if "Buy" in signal_type else 5
+    duration = 5
     return {
         "Time": timestamp,
         "Signal": signal_type,
@@ -157,25 +157,19 @@ def simulate_money_management(signals, strategy="Flat", initial_balance=1000, be
 
     return pd.DataFrame(result_log)
 
-def calculate_performance_metrics(results_df, initial_balance=1000):
-    total_trades = len(results_df)
-    wins = results_df[results_df["Result"] == "Win"]
-    losses = results_df[results_df["Result"] == "Loss"]
-
-    win_rate = len(wins) / total_trades if total_trades else 0
-    roi = (results_df["Balance"].iloc[-1] - initial_balance) / initial_balance
-    profit_factor = wins["Balance"].diff().mean() / abs(losses["Balance"].diff().mean()) if not losses.empty else float('inf')
-
-    cumulative_balance = results_df["Balance"].cummax()
-    drawdowns = cumulative_balance - results_df["Balance"]
-    max_drawdown = drawdowns.max()
+def calculate_performance_metrics(df, initial_balance=1000):
+    wins = df[df["Result"] == "Win"]
+    losses = df[df["Result"] == "Loss"]
+    win_rate = len(wins) / len(df) * 100 if len(df) > 0 else 0
+    net_profit = df["Balance"].iloc[-1] - initial_balance
+    max_drawdown = initial_balance - df["Balance"].min()
+    profit_factor = wins["Balance"].diff().sum() / abs(losses["Balance"].diff().sum()) if not losses.empty else np.inf
 
     return {
-        "Total Trades": total_trades,
-        "Win Rate (%)": round(win_rate * 100, 2),
-        "ROI (%)": round(roi * 100, 2),
-        "Profit Factor": round(profit_factor, 2),
-        "Max Drawdown": round(max_drawdown, 2)
+        "Win Rate (%)": round(win_rate, 2),
+        "Net Profit ($)": round(net_profit, 2),
+        "Max Drawdown ($)": round(max_drawdown, 2),
+        "Profit Factor": round(profit_factor, 2)
     }
 
 def plot_chart(df, asset):
@@ -186,13 +180,29 @@ def plot_chart(df, asset):
     fig.update_layout(title=asset, xaxis_rangeslider_visible=False)
     return fig
 
+def play_browser_alert(message="New Signal!"):
+    js_code = f"""
+    <script>
+        if (!window.alerted) {{
+            alert("{message}");
+            var audio = new Audio("https://www.soundjay.com/buttons/sounds/button-3.mp3");
+            audio.play();
+            window.alerted = true;
+        }}
+        setTimeout(() => {{
+            window.alerted = false;
+        }}, 5000);
+    </script>
+    """
+    components.html(js_code, height=0, width=0)
+
 # --- STREAMLIT APP ---
 st.set_page_config(layout="wide")
 st_autorefresh(interval=REFRESH_INTERVAL * 1000, key="refresh")
 
 st.title("📈 Pocket Option Signals | Live + Backtest + Money Management")
 
-# --- SIDEBAR ---
+# SIDEBAR
 uploaded_file = st.sidebar.file_uploader("Upload historical data (CSV)", type=["csv"])
 selected_assets = st.sidebar.multiselect("Select Assets", ASSETS, default=ASSETS[:2])
 selected_strategy = st.sidebar.selectbox("Strategy", [
@@ -200,6 +210,7 @@ selected_strategy = st.sidebar.selectbox("Strategy", [
     "Stochastic Oscillator", "EMA + RSI Combined", "ML Model (Random Forest)"
 ])
 money_strategy = st.sidebar.selectbox("Money Management", ["Flat", "Martingale"])
+enable_alerts = st.sidebar.checkbox("🔔 Enable Browser Alerts", value=True)
 
 # --- BACKTESTING ---
 if uploaded_file:
@@ -214,14 +225,14 @@ if uploaded_file:
 
     st.subheader("📊 Backtest Results")
     st.dataframe(pd.DataFrame(signals))
-
     st.subheader("💰 Money Management Simulation")
     results_df = simulate_money_management(signals, strategy=money_strategy)
     st.dataframe(results_df)
 
     st.subheader("📈 Performance Metrics")
     metrics = calculate_performance_metrics(results_df)
-    st.json(metrics)
+    for k, v in metrics.items():
+        st.metric(label=k, value=v)
 
     st.plotly_chart(plot_chart(df, "Backtest Data"))
 
@@ -232,24 +243,22 @@ if not selected_assets:
     st.warning("⚠️ Please select at least one asset.")
 else:
     for asset in selected_assets:
-        if asset not in VALID_SYMBOLS:
-            st.warning(f"⚠️ Asset {asset} is not a valid Binance trading pair.")
-            continue
-
         df_live = fetch_candles(asset)
         if df_live is not None:
             df_live = calculate_indicators(df_live)
             if selected_strategy == "ML Model (Random Forest)":
-                st.info("ML-based prediction is not available for live data. Try backtesting instead.")
+                st.info("ML-based prediction is not available for live data.")
             else:
                 live_signals = detect_signals(df_live, selected_strategy)
                 if live_signals:
                     st.markdown(f"### {asset}")
                     st.dataframe(pd.DataFrame(live_signals[-5:]))
 
-                    # Trade Recommendation Summary
                     latest_signal = live_signals[-1]
                     summary_text = f"📍 **{latest_signal['Signal']}** {asset} at {latest_signal['Time'].strftime('%H:%M')} for {latest_signal['Trade Duration (min)']} min – Strategy: {selected_strategy}"
                     st.markdown(summary_text)
+
+                    if enable_alerts:
+                        play_browser_alert(f"{latest_signal['Signal']} {asset} at {latest_signal['Time'].strftime('%H:%M')}")
 
                     st.plotly_chart(plot_chart(df_live, asset), use_container_width=True)
