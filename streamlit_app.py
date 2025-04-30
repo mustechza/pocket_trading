@@ -12,8 +12,6 @@ from sklearn.model_selection import train_test_split
 import streamlit.components.v1 as components
 
 
-# --- MUST BE FIRST STREAMLIT COMMAND ---
-st.set_page_config(layout="wide")
 
 # --- SETTINGS ---
 REFRESH_INTERVAL = 10  # seconds
