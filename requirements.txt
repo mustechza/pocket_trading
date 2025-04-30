@@ -6,3 +6,4 @@ plotly
 scikit-learn
 streamlit-autorefresh
 ta
+websocket-client
