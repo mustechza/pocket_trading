@@ -9,6 +9,17 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 import ta  # TA-Lib (pandas-ta alternative if needed)
 
+def get_valid_symbols():
+    try:
+        response = requests.get("https://api.binance.com/api/v3/exchangeInfo", timeout=10)
+        data = response.json()
+        return [s["symbol"] for s in data["symbols"]]
+    except Exception as e:
+        st.warning(f"Failed to fetch Binance symbols: {e}")
+        return []
+
+
+
 # --- SETTINGS ---
 REFRESH_INTERVAL = 10  # seconds
 CANDLE_LIMIT = 500
@@ -170,6 +181,10 @@ st_autorefresh(interval=REFRESH_INTERVAL * 1000, key="refresh")
 
 st.title("📈 Pocket Option Signals | Live + Backtest + Money Management")
 
+# --- VALID SYMBOLS ---
+VALID_SYMBOLS = get_valid_symbols()
+ASSETS = [s for s in ASSETS if s in VALID_SYMBOLS]  # Filter initial asset list
+
 # SIDEBAR
 uploaded_file = st.sidebar.file_uploader("Upload historical data (CSV)", type=["csv"])
 selected_assets = st.sidebar.multiselect("Select Assets", ASSETS, default=ASSETS[:2])
@@ -199,25 +214,23 @@ if uploaded_file:
 
 # --- LIVE SIGNALS ---
 st.subheader("📡 Live Market Signal Detection")
+
 if not selected_assets:
     st.warning("⚠️ Please select at least one asset.")
 else:
     for asset in selected_assets:
-        if not asset:
+        if asset not in VALID_SYMBOLS:
+            st.warning(f"⚠️ Asset {asset} is not a valid Binance trading pair.")
             continue
+
         df_live = fetch_candles(asset)
         if df_live is not None:
             df_live = calculate_indicators(df_live)
-            live_signals = detect_signals(df_live, selected_strategy) if selected_strategy != "ML Model (Random Forest)" else []
-            if live_signals:
-                st.markdown(f"### {asset}")
-                st.dataframe(pd.DataFrame(live_signals[-5:]))
-                st.plotly_chart(plot_chart(df_live, asset), use_container_width=True)
-
-    if df_live is not None:
-        df_live = calculate_indicators(df_live)
-        live_signals = detect_signals(df_live, selected_strategy) if selected_strategy != "ML Model (Random Forest)" else []
-        if live_signals:
-            st.markdown(f"### {asset}")
-            st.dataframe(pd.DataFrame(live_signals[-5:]))
-            st.plotly_chart(plot_chart(df_live, asset), use_container_width=True)
+            if selected_strategy == "ML Model (Random Forest)":
+                st.info("ML-based prediction is not available for live data. Try backtesting instead.")
+            else:
+                live_signals = detect_signals(df_live, selected_strategy)
+                if live_signals:
+                    st.markdown(f"### {asset}")
+                    st.dataframe(pd.DataFrame(live_signals[-5:]))
+                    st.plotly_chart(plot_chart(df_live, asset), use_container_width=True)
