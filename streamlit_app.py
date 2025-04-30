@@ -9,7 +9,7 @@ import datetime
 from streamlit_autorefresh import st_autorefresh
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
-import ta
+import streamlit.components.v1 as components
 
 
 # --- MUST BE FIRST STREAMLIT COMMAND ---
