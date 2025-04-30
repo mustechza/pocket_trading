@@ -3,6 +3,4 @@ pandas
 numpy
 requests
 plotly
-python-telegram-bot
 streamlit-autorefresh
-
