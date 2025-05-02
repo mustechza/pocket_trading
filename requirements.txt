@@ -7,3 +7,5 @@ scikit-learn
 streamlit-autorefresh
 ta
 websocket-client
+pandas-ta
+
