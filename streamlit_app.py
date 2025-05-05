@@ -16,7 +16,7 @@ import streamlit.components.v1 as components
 # --- SETTINGS ---
 REFRESH_INTERVAL = 10  # seconds
 CANDLE_LIMIT = 500
-BINANCE_URL = "wss://ws-api.binance.com:443/ws-api/v3"
+BINANCE_URL = "https://api.binance.com/"
 ASSETS = ["ETHUSDT", "SOLUSDT", "ADAUSDT", "BNBUSDT", "XRPUSDT", "LTCUSDT"]
 
 # --- AUTO REFRESH ---
