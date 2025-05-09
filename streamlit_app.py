@@ -14,6 +14,7 @@ st.set_page_config(layout="wide")
 REFRESH_INTERVAL = 10  # seconds
 ASSETS = ["ethusdt", "solusdt", "adausdt", "bnbusdt", "xrpusdt", "ltcusdt"]
 live_data = {}
+signal_memory = {}  # to track last signal per asset
 
 # --- SIDEBAR ---
 uploaded_file = st.sidebar.file_uploader("Upload historical data (CSV)", type=["csv"])
@@ -58,36 +59,36 @@ def detect_signals(df, strategy):
         price = df['close'].iloc[i]
         if strategy == "EMA Cross":
             if df['EMA5'].iloc[i-1] < df['EMA20'].iloc[i-1] and df['EMA5'].iloc[i] > df['EMA20'].iloc[i]:
-                signals.append(generate_signal(t, "Buy (EMA Cross)", price))
+                signals.append(generate_signal(t, "Buy", price))
             elif df['EMA5'].iloc[i-1] > df['EMA20'].iloc[i-1] and df['EMA5'].iloc[i] < df['EMA20'].iloc[i]:
-                signals.append(generate_signal(t, "Sell (EMA Cross)", price))
+                signals.append(generate_signal(t, "Sell", price))
         elif strategy == "RSI Divergence":
             rsi = df['RSI'].iloc[i]
             if rsi < 30:
-                signals.append(generate_signal(t, "Buy (RSI Oversold)", price))
+                signals.append(generate_signal(t, "Buy", price))
             elif rsi > 70:
-                signals.append(generate_signal(t, "Sell (RSI Overbought)", price))
+                signals.append(generate_signal(t, "Sell", price))
         elif strategy == "MACD Cross":
             if df['MACD'].iloc[i-1] < df['MACD_signal'].iloc[i-1] and df['MACD'].iloc[i] > df['MACD_signal'].iloc[i]:
-                signals.append(generate_signal(t, "Buy (MACD Cross)", price))
+                signals.append(generate_signal(t, "Buy", price))
             elif df['MACD'].iloc[i-1] > df['MACD_signal'].iloc[i-1] and df['MACD'].iloc[i] < df['MACD_signal'].iloc[i]:
-                signals.append(generate_signal(t, "Sell (MACD Cross)", price))
+                signals.append(generate_signal(t, "Sell", price))
         elif strategy == "Bollinger Band Bounce":
             if df['close'].iloc[i] < df['BB_lower'].iloc[i]:
-                signals.append(generate_signal(t, "Buy (BB Lower)", price))
+                signals.append(generate_signal(t, "Buy", price))
             elif df['close'].iloc[i] > df['BB_upper'].iloc[i]:
-                signals.append(generate_signal(t, "Sell (BB Upper)", price))
+                signals.append(generate_signal(t, "Sell", price))
         elif strategy == "Stochastic Oscillator":
             stoch = df['Stochastic'].iloc[i]
             if stoch < 20:
-                signals.append(generate_signal(t, "Buy (Stochastic)", price))
+                signals.append(generate_signal(t, "Buy", price))
             elif stoch > 80:
-                signals.append(generate_signal(t, "Sell (Stochastic)", price))
+                signals.append(generate_signal(t, "Sell", price))
         elif strategy == "EMA + RSI Combined":
             if df['EMA5'].iloc[i-1] < df['EMA20'].iloc[i-1] and df['EMA5'].iloc[i] > df['EMA20'].iloc[i] and df['RSI'].iloc[i] < 40:
-                signals.append(generate_signal(t, "Buy (EMA+RSI)", price))
+                signals.append(generate_signal(t, "Buy", price))
             elif df['EMA5'].iloc[i-1] > df['EMA20'].iloc[i-1] and df['EMA5'].iloc[i] < df['EMA20'].iloc[i] and df['RSI'].iloc[i] > 60:
-                signals.append(generate_signal(t, "Sell (EMA+RSI)", price))
+                signals.append(generate_signal(t, "Sell", price))
     return signals
 
 # --- CHART PLOT ---
@@ -136,7 +137,7 @@ if "ws_started" not in st.session_state:
 st_autorefresh(interval=REFRESH_INTERVAL * 1000, key="refresh")
 
 # --- TITLE ---
-st.title("📡 Real-Time Pocket Option Signals + Dashboard")
+st.title("📡 Real-Time Pocket Option Signals + Animated Dashboard")
 
 # --- LIVE SIGNALS ---
 st.subheader("🔴 Live Signals & Charts")
@@ -149,11 +150,42 @@ for idx, asset in enumerate(selected_assets):
             df_live = pd.DataFrame(live_data[asset])
             df_live = calculate_indicators(df_live)
             signals = detect_signals(df_live, selected_strategy)
-            if signals:
-                last_signal = signals[-1]
-                st.success(f"**{last_signal['Signal']}** @ {last_signal['Price']}")
+            last_signal = signals[-1] if signals else None
+
+            # Remember last signal per asset
+            prev_signal = signal_memory.get(asset)
+            if last_signal and (prev_signal != last_signal['Time']):
+                signal_memory[asset] = last_signal['Time']
+                # Flashing effect
+                color = "green" if last_signal["Signal"] == "Buy" else "red"
+                st.markdown(
+                    f"""
+                    <div style='background-color:{color};padding:10px;border-radius:10px;text-align:center;animation: flash 1s infinite;'>
+                    <strong style='color:white;font-size:18px'>{last_signal['Signal']} @ {last_signal['Price']}</strong>
+                    </div>
+                    <style>
+                    @keyframes flash {{
+                        0% {{opacity: 1;}}
+                        50% {{opacity: 0.5;}}
+                        100% {{opacity: 1;}}
+                    }}
+                    </style>
+                    """,
+                    unsafe_allow_html=True
+                )
+            elif last_signal:
+                color = "green" if last_signal["Signal"] == "Buy" else "red"
+                st.markdown(
+                    f"""
+                    <div style='background-color:{color};padding:10px;border-radius:10px;text-align:center;'>
+                    <strong style='color:white;font-size:18px'>{last_signal['Signal']} @ {last_signal['Price']}</strong>
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
             else:
                 st.info("No signal yet.")
+
             st.plotly_chart(plot_chart(df_live, asset), use_container_width=True)
         else:
             st.warning("Waiting for live data...")
