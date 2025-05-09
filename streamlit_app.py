@@ -2,122 +2,119 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
+import datetime
 import asyncio
-import websockets
 import json
-from datetime import datetime
-import streamlit.components.v1 as components
+import websockets
+import time
 
-# --- SETTINGS ---
+# --- Streamlit Config ---
 st.set_page_config(layout="wide")
-ASSETS = ["ethusdt", "btcusdt", "bnbusdt", "xrpusdt"]
-INTERVAL = "1m"
+st.title("📡 Live Binance Signals Dashboard")
 
-# --- SIDEBAR ---
+# Assets
+ASSETS = ["btcusdt", "ethusdt", "solusdt"]
 selected_assets = st.sidebar.multiselect("Select Assets", ASSETS, default=ASSETS[:2])
-selected_strategy = st.sidebar.selectbox("Strategy", ["EMA Cross", "RSI", "MACD"])
-ema_short = st.sidebar.number_input("EMA Short", 2, 50, 5)
-ema_long = st.sidebar.number_input("EMA Long", 5, 100, 20)
 
-# --- INDICATOR FUNCTIONS ---
-def calculate_indicators(df):
-    df['EMA_Short'] = df['close'].ewm(span=ema_short, adjust=False).mean()
-    df['EMA_Long'] = df['close'].ewm(span=ema_long, adjust=False).mean()
-    df['RSI'] = compute_rsi(df['close'])
-    return df
+# Initialize session state
+if "live_data" not in st.session_state:
+    st.session_state.live_data = {symbol: pd.DataFrame() for symbol in ASSETS}
 
-def compute_rsi(series, period=14):
-    delta = series.diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-    rs = gain / loss
-    return 100 - (100 / (1 + rs))
+if "signals" not in st.session_state:
+    st.session_state.signals = {symbol: "⏳ Waiting..." for symbol in ASSETS}
 
-def detect_signal(df, strategy):
-    if len(df) < 2:
-        return None
-    last = df.iloc[-1]
-    prev = df.iloc[-2]
-    if strategy == "EMA Cross":
-        if prev['EMA_Short'] < prev['EMA_Long'] and last['EMA_Short'] > last['EMA_Long']:
-            return "Buy (EMA Cross)"
-        elif prev['EMA_Short'] > prev['EMA_Long'] and last['EMA_Short'] < last['EMA_Long']:
-            return "Sell (EMA Cross)"
-    elif strategy == "RSI":
-        if last['RSI'] < 30:
-            return "Buy (RSI Oversold)"
-        elif last['RSI'] > 70:
-            return "Sell (RSI Overbought)"
-    elif strategy == "MACD":
-        # Add MACD logic if needed
-        pass
-    return None
+# --- Function: Compute EMA + RSI Signals ---
+def compute_signals(df):
+    df = df.copy()
+    df['EMA20'] = df['close'].ewm(span=20).mean()
+    df['EMA50'] = df['close'].ewm(span=50).mean()
+    delta = df['close'].diff()
+    gain = np.where(delta > 0, delta, 0)
+    loss = np.where(delta < 0, -delta, 0)
+    avg_gain = pd.Series(gain).rolling(window=14).mean()
+    avg_loss = pd.Series(loss).rolling(window=14).mean()
+    rs = avg_gain / avg_loss
+    df['RSI'] = 100 - (100 / (1 + rs))
 
-def plot_chart(df, asset):
+    latest = df.iloc[-1]
+
+    # Signal logic
+    if latest['EMA20'] > latest['EMA50'] and latest['RSI'] < 70:
+        return "🟢 Buy Signal"
+    elif latest['EMA20'] < latest['EMA50'] and latest['RSI'] > 30:
+        return "🔴 Sell Signal"
+    else:
+        return "⚪ No Clear Signal"
+
+# --- Function: Plot Chart ---
+def plot_chart(df, symbol):
     fig = go.Figure()
     fig.add_trace(go.Candlestick(
-        x=df['time'],
-        open=df['open'],
-        high=df['high'],
-        low=df['low'],
-        close=df['close'],
-        name='Candles'))
-    fig.add_trace(go.Scatter(x=df['time'], y=df['EMA_Short'], name="EMA Short", line=dict(color='blue')))
-    fig.add_trace(go.Scatter(x=df['time'], y=df['EMA_Long'], name="EMA Long", line=dict(color='red')))
-    fig.update_layout(title=asset.upper(), xaxis_rangeslider_visible=False)
+        x=df['timestamp'],
+        open=df['open'], high=df['high'],
+        low=df['low'], close=df['close'],
+        name='Candles'
+    ))
+    if 'EMA20' in df.columns:
+        fig.add_trace(go.Scatter(x=df['timestamp'], y=df['EMA20'], line=dict(color='blue', width=1), name='EMA20'))
+    if 'EMA50' in df.columns:
+        fig.add_trace(go.Scatter(x=df['timestamp'], y=df['EMA50'], line=dict(color='orange', width=1), name='EMA50'))
+    fig.update_layout(title=symbol.upper(), xaxis_rangeslider_visible=False)
     return fig
 
-# --- STREAMLIT PLACEHOLDERS ---
-st.title("📡 Real-Time Crypto Signals (WebSocket Powered)")
-
-cards = {}
-charts = {}
-
-for asset in selected_assets:
-    col1, col2 = st.columns([1, 3])
-    cards[asset] = col1.empty()
-    charts[asset] = col2.empty()
-
-# --- ASYNC BINANCE STREAM ---
+# --- Async Function: Binance WebSocket Stream ---
 async def binance_ws(symbol):
-    url = f"wss://stream.binance.com:9443/ws/{symbol}@kline_{INTERVAL}"
-    df = pd.DataFrame()
+    url = f"wss://stream.binance.com:9443/ws/{symbol}@kline_1m"
     async with websockets.connect(url) as ws:
         while True:
             msg = await ws.recv()
             data = json.loads(msg)
             k = data['k']
+            ts = pd.to_datetime(int(k['t']), unit='ms')
             row = {
-                'time': datetime.fromtimestamp(k['t'] / 1000),
-                'open': float(k['o']),
-                'high': float(k['h']),
-                'low': float(k['l']),
-                'close': float(k['c']),
-                'volume': float(k['v'])
+                "timestamp": ts,
+                "open": float(k['o']),
+                "high": float(k['h']),
+                "low": float(k['l']),
+                "close": float(k['c'])
             }
-            df = pd.concat([df, pd.DataFrame([row])]).drop_duplicates(subset='time').reset_index(drop=True)
-            df = calculate_indicators(df)
+            df = st.session_state.live_data[symbol]
+            df = pd.concat([df, pd.DataFrame([row])]).drop_duplicates(subset='timestamp', keep='last')
+            df = df.sort_values('timestamp').tail(100)
+            st.session_state.live_data[symbol] = df
 
-            signal = detect_signal(df, selected_strategy)
+            # Compute signal
+            if len(df) > 50:
+                signal = compute_signals(df)
+                st.session_state.signals[symbol] = signal
 
-            # --- Update Card ---
-            price = row['close']
-            color = "green" if signal and "Buy" in signal else "red" if signal else "gray"
-            cards[symbol].markdown(f"""
-                <div style="padding:10px;border-radius:10px;background-color:{color};color:white;text-align:center">
-                <h3>{symbol.upper()}</h3>
-                <p>Price: {price:.4f}</p>
-                <b>{signal or 'Waiting...'}</b>
-                </div>
-            """, unsafe_allow_html=True)
-
-            # --- Update Chart ---
-            charts[symbol].plotly_chart(plot_chart(df.tail(100), symbol), use_container_width=True)
-
-# --- MAIN EVENT LOOP ---
-async def main():
-    tasks = [binance_ws(asset) for asset in selected_assets]
+# --- Start All Streams ---
+async def run_streams():
+    tasks = [asyncio.create_task(binance_ws(symbol)) for symbol in selected_assets]
     await asyncio.gather(*tasks)
 
-# --- RUN ---
-asyncio.run(main())
+# --- Start WebSocket in Background ---
+if "ws_started" not in st.session_state:
+    st.session_state.ws_started = True
+    asyncio.get_event_loop().run_in_executor(None, lambda: asyncio.run(run_streams()))
+
+# --- Streamlit Live Dashboard ---
+placeholder = st.empty()
+
+while True:
+    with placeholder.container():
+        cols = st.columns(len(selected_assets))
+        for i, symbol in enumerate(selected_assets):
+            df = st.session_state.live_data[symbol]
+            signal = st.session_state.signals.get(symbol, "⏳ Waiting...")
+            if not df.empty:
+                price = df['close'].iloc[-1]
+                cols[i].metric(label=f"{symbol.upper()} Price", value=f"${price:.2f}", delta=signal)
+                cols[i].plotly_chart(plot_chart(df, symbol), use_container_width=True)
+            else:
+                cols[i].write(f"Waiting for live data for {symbol.upper()}...")
+
+    # Refresh every 2 sec
+    time_now = datetime.datetime.now().strftime('%H:%M:%S')
+    st.caption(f"🔄 Last updated: {time_now}")
+    time.sleep(2)
