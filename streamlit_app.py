@@ -12,16 +12,21 @@ import time
 st.set_page_config(layout="wide")
 st.title("📡 Live Binance Signals Dashboard")
 
-# Assets
 ASSETS = ["btcusdt", "ethusdt", "solusdt"]
 selected_assets = st.sidebar.multiselect("Select Assets", ASSETS, default=ASSETS[:2])
 
-# Initialize session state
+# Initialize state
 if "live_data" not in st.session_state:
     st.session_state.live_data = {symbol: pd.DataFrame() for symbol in ASSETS}
 
 if "signals" not in st.session_state:
     st.session_state.signals = {symbol: "⏳ Waiting..." for symbol in ASSETS}
+
+if "last_update" not in st.session_state:
+    st.session_state.last_update = {symbol: 0 for symbol in ASSETS}
+
+if "ws_tasks" not in st.session_state:
+    st.session_state.ws_tasks = {}
 
 # --- Function: Compute EMA + RSI Signals ---
 def compute_signals(df):
@@ -37,8 +42,6 @@ def compute_signals(df):
     df['RSI'] = 100 - (100 / (1 + rs))
 
     latest = df.iloc[-1]
-
-    # Signal logic
     if latest['EMA20'] > latest['EMA50'] and latest['RSI'] < 70:
         return "🟢 Buy Signal"
     elif latest['EMA20'] < latest['EMA50'] and latest['RSI'] > 30:
@@ -65,38 +68,51 @@ def plot_chart(df, symbol):
 # --- Async Function: Binance WebSocket Stream ---
 async def binance_ws(symbol):
     url = f"wss://stream.binance.com:9443/ws/{symbol}@kline_1m"
-    async with websockets.connect(url) as ws:
-        while True:
-            msg = await ws.recv()
-            data = json.loads(msg)
-            k = data['k']
-            ts = pd.to_datetime(int(k['t']), unit='ms')
-            row = {
-                "timestamp": ts,
-                "open": float(k['o']),
-                "high": float(k['h']),
-                "low": float(k['l']),
-                "close": float(k['c'])
-            }
-            df = st.session_state.live_data[symbol]
-            df = pd.concat([df, pd.DataFrame([row])]).drop_duplicates(subset='timestamp', keep='last')
-            df = df.sort_values('timestamp').tail(100)
-            st.session_state.live_data[symbol] = df
+    while True:
+        try:
+            async with websockets.connect(url) as ws:
+                while True:
+                    msg = await ws.recv()
+                    data = json.loads(msg)
+                    k = data['k']
+                    ts = pd.to_datetime(int(k['t']), unit='ms')
+                    row = {
+                        "timestamp": ts,
+                        "open": float(k['o']),
+                        "high": float(k['h']),
+                        "low": float(k['l']),
+                        "close": float(k['c'])
+                    }
+                    df = st.session_state.live_data[symbol]
+                    df = pd.concat([df, pd.DataFrame([row])]).drop_duplicates(subset='timestamp', keep='last')
+                    df = df.sort_values('timestamp').tail(100)
+                    st.session_state.live_data[symbol] = df
 
-            # Compute signal
-            if len(df) > 50:
-                signal = compute_signals(df)
-                st.session_state.signals[symbol] = signal
+                    st.session_state.last_update[symbol] = time.time()
 
-# --- Start All Streams ---
-async def run_streams():
-    tasks = [asyncio.create_task(binance_ws(symbol)) for symbol in selected_assets]
-    await asyncio.gather(*tasks)
+                    if len(df) > 50:
+                        signal = compute_signals(df)
+                        st.session_state.signals[symbol] = signal
 
-# --- Start WebSocket in Background ---
-if "ws_started" not in st.session_state:
-    st.session_state.ws_started = True
-    asyncio.get_event_loop().run_in_executor(None, lambda: asyncio.run(run_streams()))
+        except Exception as e:
+            st.session_state.signals[symbol] = f"❌ Reconnecting..."
+            await asyncio.sleep(3)  # Retry after 3 sec
+
+# --- Start or Restart WebSocket ---
+def start_ws(symbol):
+    # Cancel existing task if any
+    task = st.session_state.ws_tasks.get(symbol)
+    if task and not task.done():
+        task.cancel()
+    # Start new task
+    loop = asyncio.get_event_loop()
+    new_task = loop.create_task(binance_ws(symbol))
+    st.session_state.ws_tasks[symbol] = new_task
+
+# --- Start Streams for selected assets ---
+for symbol in selected_assets:
+    if symbol not in st.session_state.ws_tasks:
+        start_ws(symbol)
 
 # --- Streamlit Live Dashboard ---
 placeholder = st.empty()
@@ -107,6 +123,17 @@ while True:
         for i, symbol in enumerate(selected_assets):
             df = st.session_state.live_data[symbol]
             signal = st.session_state.signals.get(symbol, "⏳ Waiting...")
+            last_time = st.session_state.last_update.get(symbol, 0)
+            seconds_since_update = time.time() - last_time
+
+            # Auto-reconnect if stale
+            if seconds_since_update > 15:
+                cols[i].error(f"❌ {symbol.upper()} Stale! No update for {int(seconds_since_update)} sec")
+                start_ws(symbol)
+                continue
+            else:
+                cols[i].success(f"🟢 {symbol.upper()} Live")
+
             if not df.empty:
                 price = df['close'].iloc[-1]
                 cols[i].metric(label=f"{symbol.upper()} Price", value=f"${price:.2f}", delta=signal)
@@ -114,7 +141,6 @@ while True:
             else:
                 cols[i].write(f"Waiting for live data for {symbol.upper()}...")
 
-    # Refresh every 2 sec
     time_now = datetime.datetime.now().strftime('%H:%M:%S')
     st.caption(f"🔄 Last updated: {time_now}")
     time.sleep(2)
