@@ -32,7 +32,7 @@ async def fetch_binance(symbol="btcusdt", interval="1m", limit=100):
             return df[['timestamp', 'open', 'high', 'low', 'close']]
 
 # --- Alpha Vantage (Forex) ---
-ALPHA_API_KEY = "YOUR_ALPHA_VANTAGE_API_KEY"
+ALPHA_API_KEY = "AWKMJ8CFU7OUNCVG"
 
 async def fetch_forex(pair="EURUSD", interval="1min", output_size="compact"):
     url = f"https://www.alphavantage.co/query?function=FX_INTRADAY&from_symbol={pair[:3]}&to_symbol={pair[3:]}&interval={interval}&outputsize={output_size}&apikey={ALPHA_API_KEY}"
