@@ -7,6 +7,8 @@ import asyncio
 import json
 import websockets
 import time
+import threading
+from streamlit_autorefresh import st_autorefresh
 
 # --- Streamlit Config ---
 st.set_page_config(layout="wide")
@@ -25,8 +27,8 @@ if "signals" not in st.session_state:
 if "last_update" not in st.session_state:
     st.session_state.last_update = {symbol: 0 for symbol in ASSETS}
 
-if "ws_tasks" not in st.session_state:
-    st.session_state.ws_tasks = {}
+if "ws_threads" not in st.session_state:
+    st.session_state.ws_threads = {}
 
 # --- Function: Compute EMA + RSI Signals ---
 def compute_signals(df):
@@ -65,82 +67,83 @@ def plot_chart(df, symbol):
     fig.update_layout(title=symbol.upper(), xaxis_rangeslider_visible=False)
     return fig
 
-# --- Async Function: Binance WebSocket Stream ---
-async def binance_ws(symbol):
+# --- Background Thread: Binance WebSocket Stream ---
+def run_ws(symbol):
     url = f"wss://stream.binance.com:9443/ws/{symbol}@kline_1m"
-    while True:
-        try:
-            async with websockets.connect(url) as ws:
-                while True:
-                    msg = await ws.recv()
-                    data = json.loads(msg)
-                    k = data['k']
-                    ts = pd.to_datetime(int(k['t']), unit='ms')
-                    row = {
-                        "timestamp": ts,
-                        "open": float(k['o']),
-                        "high": float(k['h']),
-                        "low": float(k['l']),
-                        "close": float(k['c'])
-                    }
-                    df = st.session_state.live_data[symbol]
-                    df = pd.concat([df, pd.DataFrame([row])]).drop_duplicates(subset='timestamp', keep='last')
-                    df = df.sort_values('timestamp').tail(100)
-                    st.session_state.live_data[symbol] = df
+    async def ws_loop():
+        while True:
+            try:
+                async with websockets.connect(url) as ws:
+                    while True:
+                        msg = await ws.recv()
+                        data = json.loads(msg)
+                        k = data['k']
+                        ts = pd.to_datetime(int(k['t']), unit='ms')
+                        row = {
+                            "timestamp": ts,
+                            "open": float(k['o']),
+                            "high": float(k['h']),
+                            "low": float(k['l']),
+                            "close": float(k['c'])
+                        }
+                        df = st.session_state.live_data[symbol]
+                        df = pd.concat([df, pd.DataFrame([row])]).drop_duplicates(subset='timestamp', keep='last')
+                        df = df.sort_values('timestamp').tail(100)
+                        st.session_state.live_data[symbol] = df
 
-                    st.session_state.last_update[symbol] = time.time()
+                        st.session_state.last_update[symbol] = time.time()
 
-                    if len(df) > 50:
-                        signal = compute_signals(df)
-                        st.session_state.signals[symbol] = signal
+                        if len(df) > 50:
+                            signal = compute_signals(df)
+                            st.session_state.signals[symbol] = signal
 
-        except Exception as e:
-            st.session_state.signals[symbol] = f"❌ Reconnecting..."
-            await asyncio.sleep(3)  # Retry after 3 sec
+            except Exception as e:
+                st.session_state.signals[symbol] = f"❌ Reconnecting..."
+                await asyncio.sleep(3)
 
-# --- Start or Restart WebSocket ---
+    asyncio.run(ws_loop())
+
+# --- Start or Restart WebSocket Thread ---
 def start_ws(symbol):
-    # Cancel existing task if any
-    task = st.session_state.ws_tasks.get(symbol)
-    if task and not task.done():
-        task.cancel()
-    # Start new task
-    loop = asyncio.get_event_loop()
-    new_task = loop.create_task(binance_ws(symbol))
-    st.session_state.ws_tasks[symbol] = new_task
+    # Skip if already running
+    thread = st.session_state.ws_threads.get(symbol)
+    if thread and thread.is_alive():
+        return
+
+    # Start new thread
+    t = threading.Thread(target=run_ws, args=(symbol,), daemon=True)
+    t.start()
+    st.session_state.ws_threads[symbol] = t
 
 # --- Start Streams for selected assets ---
 for symbol in selected_assets:
-    if symbol not in st.session_state.ws_tasks:
-        start_ws(symbol)
+    start_ws(symbol)
+
+# --- Auto-refresh every 2 seconds ---
+st_autorefresh(interval=2000, key="refresh")
 
 # --- Streamlit Live Dashboard ---
-placeholder = st.empty()
+cols = st.columns(len(selected_assets))
+for i, symbol in enumerate(selected_assets):
+    df = st.session_state.live_data[symbol]
+    signal = st.session_state.signals.get(symbol, "⏳ Waiting...")
+    last_time = st.session_state.last_update.get(symbol, 0)
+    seconds_since_update = time.time() - last_time
 
-while True:
-    with placeholder.container():
-        cols = st.columns(len(selected_assets))
-        for i, symbol in enumerate(selected_assets):
-            df = st.session_state.live_data[symbol]
-            signal = st.session_state.signals.get(symbol, "⏳ Waiting...")
-            last_time = st.session_state.last_update.get(symbol, 0)
-            seconds_since_update = time.time() - last_time
+    # Auto-reconnect if stale
+    if seconds_since_update > 15:
+        cols[i].error(f"❌ {symbol.upper()} Stale! No update for {int(seconds_since_update)} sec")
+        start_ws(symbol)
+        continue
+    else:
+        cols[i].success(f"🟢 {symbol.upper()} Live")
 
-            # Auto-reconnect if stale
-            if seconds_since_update > 15:
-                cols[i].error(f"❌ {symbol.upper()} Stale! No update for {int(seconds_since_update)} sec")
-                start_ws(symbol)
-                continue
-            else:
-                cols[i].success(f"🟢 {symbol.upper()} Live")
+    if not df.empty:
+        price = df['close'].iloc[-1]
+        cols[i].metric(label=f"{symbol.upper()} Price", value=f"${price:.2f}", delta=signal)
+        cols[i].plotly_chart(plot_chart(df, symbol), use_container_width=True)
+    else:
+        cols[i].write(f"Waiting for live data for {symbol.upper()}...")
 
-            if not df.empty:
-                price = df['close'].iloc[-1]
-                cols[i].metric(label=f"{symbol.upper()} Price", value=f"${price:.2f}", delta=signal)
-                cols[i].plotly_chart(plot_chart(df, symbol), use_container_width=True)
-            else:
-                cols[i].write(f"Waiting for live data for {symbol.upper()}...")
-
-    time_now = datetime.datetime.now().strftime('%H:%M:%S')
-    st.caption(f"🔄 Last updated: {time_now}")
-    time.sleep(2)
+time_now = datetime.datetime.now().strftime('%H:%M:%S')
+st.caption(f"🔄 Last updated: {time_now}")
