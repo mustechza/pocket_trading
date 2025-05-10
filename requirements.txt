@@ -8,4 +8,5 @@ streamlit-autorefresh
 ta
 websockets
 pandas-ta
+aiohttp
 
