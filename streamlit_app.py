@@ -53,22 +53,19 @@ async def fetch_forex(pair="EURUSD", interval="1min", output_size="compact"):
             df = df.reset_index().rename(columns={'index': 'timestamp'})
             return df[['timestamp', 'open', 'high', 'low', 'close']]
 
-# --- Async Fetch Loop ---
-async def fetch_all():
-    while True:
-        tasks = []
-        for sym in selected_crypto:
-            tasks.append(fetch_binance(sym))
-        for pair in selected_forex:
-            tasks.append(fetch_forex(pair))
+# --- Async Fetch Once ---
+async def fetch_once():
+    tasks = []
+    for sym in selected_crypto:
+        tasks.append(fetch_binance(sym))
+    for pair in selected_forex:
+        tasks.append(fetch_forex(pair))
 
-        results = await asyncio.gather(*tasks)
+    results = await asyncio.gather(*tasks)
 
-        # Save results
-        for i, sym in enumerate(selected_crypto + selected_forex):
-            st.session_state.market_data[sym] = results[i]
-
-        await asyncio.sleep(10)  # refresh every 10 sec
+    # Save results
+    for i, sym in enumerate(selected_crypto + selected_forex):
+        st.session_state.market_data[sym] = results[i]
 
 # --- Display Function ---
 def show_dashboard():
@@ -76,18 +73,20 @@ def show_dashboard():
     for i, sym in enumerate(selected_crypto + selected_forex):
         df = st.session_state.market_data.get(sym, pd.DataFrame())
         if df.empty:
-            cols[i].write(f"Waiting for data for {sym.upper()}...")
+            cols[i].warning(f"⏳ Waiting for data for {sym.upper()}...")
             continue
         price = df['close'].iloc[-1]
         cols[i].metric(label=f"{sym.upper()} Price", value=f"{price:.5f}")
         cols[i].line_chart(df.set_index('timestamp')['close'])
 
-# --- Start Async Loop ---
+# --- Async Loop ---
 async def main_loop():
-    task_fetch = asyncio.create_task(fetch_all())
+    # Initial load
+    await fetch_once()
     while True:
         show_dashboard()
-        await asyncio.sleep(5)
+        await fetch_once()
+        await asyncio.sleep(10)  # refresh every 10 sec
 
 # --- Run ---
 asyncio.run(main_loop())
