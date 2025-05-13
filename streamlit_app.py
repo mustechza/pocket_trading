@@ -1,35 +1,33 @@
-import streamlit as st 
-st.set_page_config(layout="wide")
-
+import streamlit as st
 import pandas as pd
 import numpy as np
 import requests
 import plotly.graph_objects as go
-import datetime
-import pytz
+from datetime import datetime, timedelta
 from streamlit_autorefresh import st_autorefresh
 from sklearn.ensemble import RandomForestClassifier
 import streamlit.components.v1 as components
 
 # --- SETTINGS ---
+st.set_page_config(layout="wide")
 REFRESH_INTERVAL = 10  # seconds
 CANDLE_LIMIT = 500
 BINANCE_URL = "https://api.binance.us/api/v3/klines"
 ASSETS = ["ETHUSDT", "SOLUSDT", "ADAUSDT", "BNBUSDT", "XRPUSDT", "LTCUSDT"]
-tz = pytz.timezone("Africa/Johannesburg")  # GMT+2
 
 # --- AUTO REFRESH ---
 st_autorefresh(interval=REFRESH_INTERVAL * 1000, key="refresh")
 
-# --- SIDEBAR INPUTS ---
+# --- SIDEBAR ---
 uploaded_file = st.sidebar.file_uploader("Upload historical data (CSV)", type=["csv"])
 selected_assets = st.sidebar.multiselect("Select Assets", ASSETS, default=ASSETS[:2])
 selected_strategy = st.sidebar.selectbox("Strategy", [
     "EMA Cross", "RSI Divergence", "MACD Cross", "Bollinger Band Bounce",
     "Stochastic Oscillator", "EMA + RSI Combined", "ML Model (Random Forest)"
 ])
-money_strategy = st.sidebar.selectbox("Money Management", ["Flat", "Martingale", "Risk % Based"])
-risk_percent = st.sidebar.slider("Risk % per Trade", 0.1, 10.0, 2.0)
+money_strategy = st.sidebar.selectbox("Money Management", ["Flat", "Martingale", "Risk %"])
+risk_pct = st.sidebar.slider("Risk % per Trade", 1, 10, value=2)
+balance_input = st.sidebar.number_input("Initial Balance ($)", value=1000)
 
 ema_short = st.sidebar.number_input("EMA Short Period", 2, 50, value=5)
 ema_long = st.sidebar.number_input("EMA Long Period", 5, 100, value=20)
@@ -38,6 +36,9 @@ stoch_period = st.sidebar.number_input("Stochastic Period", 5, 50, value=14)
 bb_period = st.sidebar.number_input("Bollinger Band Period", 5, 50, value=20)
 
 # --- FUNCTIONS ---
+def to_gmt_plus2(ts):
+    return ts + timedelta(hours=2)
+
 def fetch_candles(symbol, interval="1m", limit=500):
     try:
         params = {"symbol": symbol, "interval": interval, "limit": limit}
@@ -47,7 +48,8 @@ def fetch_candles(symbol, interval="1m", limit=500):
             'timestamp', 'open', 'high', 'low', 'close', 'volume',
             'close_time', 'qav', 'num_trades', 'taker_base_vol', 'taker_quote_vol', 'ignore'
         ])
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms').dt.tz_localize('UTC').dt.tz_convert(tz)
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        df['timestamp'] = df['timestamp'].apply(to_gmt_plus2)
         df[['open', 'high', 'low', 'close']] = df[['open', 'high', 'low', 'close']].astype(float)
         return df
     except Exception as e:
@@ -57,7 +59,7 @@ def fetch_candles(symbol, interval="1m", limit=500):
 def calculate_indicators(df):
     df['EMA5'] = df['close'].ewm(span=ema_short, adjust=False).mean()
     df['EMA20'] = df['close'].ewm(span=ema_long, adjust=False).mean()
-    
+
     delta = df['close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=rsi_period).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=rsi_period).mean()
@@ -76,17 +78,13 @@ def calculate_indicators(df):
 
     return df
 
-def get_trade_duration(signal):
-    if "EMA" in signal: return 5
-    elif "MACD" in signal: return 3
-    elif "RSI" in signal: return 4
-    elif "Stochastic" in signal: return 2
-    elif "Bollinger" in signal: return 4
-    elif "ML" in signal: return 2
-    return 5
-
 def generate_signal(timestamp, signal_type, price):
-    duration = get_trade_duration(signal_type)
+    if "Buy" in signal_type:
+        duration = 3
+    elif "Sell" in signal_type:
+        duration = 5
+    else:
+        duration = 4
     return {
         "Time": timestamp,
         "Signal": signal_type,
@@ -146,38 +144,36 @@ def train_ml_model(df):
     df = df.dropna(subset=features + ['target'])
     X = df[features]
     y = df['target']
-
     model = RandomForestClassifier(n_estimators=100, random_state=42)
     model.fit(X, y)
-
     df['ML_Prediction'] = model.predict(X)
     df['Signal'] = df['ML_Prediction'].map({1: 'Buy (ML)', 0: 'Sell (ML)'})
-    df['Trade Duration (min)'] = df['Signal'].apply(get_trade_duration)
-    return df[['timestamp', 'Signal', 'close', 'Trade Duration (min)']].rename(columns={'timestamp': 'Time', 'close': 'Price'})
+    df['Trade Duration (min)'] = df['Signal'].apply(lambda x: 3 if "Buy" in x else 5)
+    return df[['timestamp', 'Signal', 'close', 'Trade Duration (min)']].rename(columns={'close': 'Price'})
 
-def simulate_money_management(signals, strategy="Flat", initial_balance=1000, base_risk=2.0):
+def simulate_money_management(signals, strategy="Flat", initial_balance=1000, risk_pct=2):
     balance = initial_balance
-    bet_size = initial_balance * (base_risk / 100)
-    last_bet = bet_size
     wins, losses, pnl = 0, 0, []
-
+    last_bet = balance * (risk_pct / 100)
     result_log = []
     for s in signals:
         win = np.random.choice([True, False], p=[0.55, 0.45])
+        if strategy == "Risk %":
+            bet = balance * (risk_pct / 100)
+        else:
+            bet = last_bet
         if win:
-            balance += last_bet
+            balance += bet
             result = "Win"
             wins += 1
-            last_bet = bet_size
+            if strategy == "Martingale":
+                last_bet = bet
         else:
-            balance -= last_bet
+            balance -= bet
             result = "Loss"
             losses += 1
             if strategy == "Martingale":
                 last_bet *= 2
-            elif strategy == "Risk % Based":
-                last_bet = balance * (base_risk / 100)
-
         pnl.append(balance)
         result_log.append({
             "Time": s["Time"], "Signal": s["Signal"], "Result": result,
@@ -187,7 +183,7 @@ def simulate_money_management(signals, strategy="Flat", initial_balance=1000, ba
     df = pd.DataFrame(result_log)
     max_drawdown = ((df['Balance'].cummax() - df['Balance']) / df['Balance'].cummax()).max()
     roi = ((balance - initial_balance) / initial_balance) * 100
-    profit_factor = (wins * bet_size) / max(losses * bet_size, 1)
+    profit_factor = (wins * bet) / max(losses * bet, 1)
 
     return df, {
         "Win Rate (%)": 100 * wins / (wins + losses),
@@ -210,7 +206,7 @@ st.title("📈 Pocket Option Signals | Live + Backtest + Money Management")
 # --- BACKTESTING ---
 if uploaded_file:
     df = pd.read_csv(uploaded_file)
-    df['timestamp'] = pd.to_datetime(df['timestamp']).dt.tz_localize('UTC').dt.tz_convert(tz)
+    df['timestamp'] = pd.to_datetime(df['timestamp']).apply(to_gmt_plus2)
     df = calculate_indicators(df)
 
     if selected_strategy == "ML Model (Random Forest)":
@@ -218,23 +214,22 @@ if uploaded_file:
     else:
         signals = detect_signals(df, selected_strategy)
 
-    st.subheader("📊 Backtest Results")
-    st.dataframe(pd.DataFrame(signals))
-
-    st.subheader("📌 Trade Recommendations Summary")
-    for s in signals[-5:]:
-        direction = "🟩 Direction: BUY (Call)" if "Buy" in s['Signal'] else "🟥 Direction: SELL (Put)"
-        st.markdown(f"""
-📊 **Signal Alert**  
-🇺🇸 **USD/CAD** 🇨🇦 *(OTC Market)*  
-🕘 **Expiration:** {s['Trade Duration (min)']} Minutes  
-🎯 **Entry Time:** {s['Time'].astimezone(tz).strftime('%H:%M')}  
-{direction}  
-💵 **Price:** {s['Price']}
-""")
+    st.subheader("📌 Last 3 Signal Alerts")
+    latest_signals = signals[-3:]
+    columns = st.columns(len(latest_signals))
+    for i, s in enumerate(latest_signals):
+        with columns[i]:
+            st.markdown(f"""
+            ### 📊 Signal Alert  
+            🧭 **{selected_strategy}**  
+            🕒 **Entry:** {s['Time'].strftime('%H:%M')}  
+            ⌛ **Duration:** {s['Trade Duration (min)']} min  
+            🎯 **Price:** {s['Price']}  
+            🟩 **Direction:** {s['Signal']}  
+            """)
 
     st.subheader("💰 Money Management Simulation")
-    results_df, metrics = simulate_money_management(signals, strategy=money_strategy, base_risk=risk_percent)
+    results_df, metrics = simulate_money_management(signals, strategy=money_strategy, initial_balance=balance_input, risk_pct=risk_pct)
     st.dataframe(results_df)
 
     st.subheader("📈 Performance Metrics")
@@ -254,13 +249,17 @@ for asset in selected_assets:
         if selected_strategy != "ML Model (Random Forest)":
             live_signals = detect_signals(df_live, selected_strategy)
             if live_signals:
-                for s in live_signals[-5:]:
-                    direction = "🟩 Direction: BUY (Call)" if "Buy" in s['Signal'] else "🟥 Direction: SELL (Put)"
-                    st.markdown(f"""
-📊 **Signal Alert - {asset}**  
-🕘 **Expiration:** {s['Trade Duration (min)']} Minutes  
-🎯 **Entry Time:** {s['Time'].astimezone(tz).strftime('%H:%M')}  
-{direction}  
-💵 **Price:** {s['Price']}
-""")
+                latest = live_signals[-3:]
+                st.markdown(f"### {asset}")
+                cols = st.columns(len(latest))
+                for i, s in enumerate(latest):
+                    with cols[i]:
+                        st.markdown(f"""
+                        ### 📊 Signal Alert  
+                        🧭 **{selected_strategy}**  
+                        🕒 **Entry:** {s['Time'].strftime('%H:%M')}  
+                        ⌛ **Duration:** {s['Trade Duration (min)']} min  
+                        🎯 **Price:** {s['Price']}  
+                        🟩 **Direction:** {s['Signal']}  
+                        """)
         st.plotly_chart(plot_chart(df_live, asset), use_container_width=True)
