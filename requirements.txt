@@ -1,6 +1,7 @@
 streamlit
-pandas-ta
-requests
-
-scikit-learn
+pandas
 numpy
+requests
+plotly
+scikit-learn
+streamlit-autorefresh
