@@ -14,15 +14,22 @@ api_key = os.getenv('BINANCE_API_KEY_TEST', 'MhSFDGReh9WuilTZikVwW51OGujElIzOilR
 api_secret = os.getenv('BINANCE_API_SECRET_TEST', 'j7BiDhZgKhaHIlPzNjv5KxQhwn3l0tWPGeVjUexNED4c3b3yEgoIwPMNgdR8nHi7')
 
 url = 'https://api1.binance.com'
-# url = https://api.binance.us # for US users
+endpoint = '/api/v3/ticker/price'
 
-api_call = '/api/v3/ticker/price'
+try:
+    res = requests.get(url + endpoint)
+    res.raise_for_status()
+    data = res.json()
 
-headers = {'content-type': 'application/json', 
-           'X-MBX-APIKEY': api_key}
+    # Check if the response is a list or a single dict
+    if isinstance(data, list):
+        df = pd.DataFrame.from_records(data)
+    elif isinstance(data, dict):
+        df = pd.DataFrame.from_records([data])
+    else:
+        raise ValueError("Unexpected data format received from Binance.")
 
-response = requests.get(url + api_call, headers=headers)
+    print(df.head())
 
-response = json.loads(response.text)
-df = pd.DataFrame.from_records(response)
-df.head()
+except Exception as e:
+    print("Error:", e)
