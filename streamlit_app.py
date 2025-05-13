@@ -6,8 +6,10 @@ from requests.exceptions import ConnectionError, Timeout, TooManyRedirects
 import json
 import os
 
-api_key = os.environ['MhSFDGReh9WuilTZikVwW51OGujElIzOilRAoX7sgywPS4YMc5m0FQB67EWU0xfR']
-api_secret = os.environ['j7BiDhZgKhaHIlPzNjv5KxQhwn3l0tWPGeVjUexNED4c3b3yEgoIwPMNgdR8nHi7']
+
+
+api_key = os.getenv('BINANCE_API_KEY_TEST', 'MhSFDGReh9WuilTZikVwW51OGujElIzOilRAoX7sgywPS4YMc5m0FQB67EWU0xfR')
+api_secret = os.getenv('BINANCE_API_SECRET_TEST', 'j7BiDhZgKhaHIlPzNjv5KxQhwn3l0tWPGeVjUexNED4c3b3yEgoIwPMNgdR8nHi7')
 
 url = 'https://api1.binance.com'
 # url = https://api.binance.us # for US users
