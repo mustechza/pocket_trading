@@ -10,7 +10,8 @@ API_KEY = os.getenv('BINANCE_API_KEY_TEST', 'MhSFDGReh9WuilTZikVwW51OGujElIzOilR
 API_SECRET = os.getenv('BINANCE_API_SECRET_TEST', 'j7BiDhZgKhaHIlPzNjv5KxQhwn3l0tWPGeVjUexNED4c3b3yEgoIwPMNgdR8nHi7')
 
 # Binance API base URL
-url = 'https://api1.binance.com'
+url = 'https://api.binance.us'
+
 endpoint = '/api/v3/ticker/price'
 
 headers = {
