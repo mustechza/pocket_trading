@@ -13,23 +13,18 @@ from requests.exceptions import ConnectionError, Timeout, TooManyRedirects
 api_key = os.getenv('BINANCE_API_KEY_TEST', 'MhSFDGReh9WuilTZikVwW51OGujElIzOilRAoX7sgywPS4YMc5m0FQB67EWU0xfR')
 api_secret = os.getenv('BINANCE_API_SECRET_TEST', 'j7BiDhZgKhaHIlPzNjv5KxQhwn3l0tWPGeVjUexNED4c3b3yEgoIwPMNgdR8nHi7')
 
+
+
 url = 'https://api1.binance.com'
-endpoint = '/api/v3/ticker/price'
+# url = https://api.binance.us # for US users
 
-try:
-    res = requests.get(url + endpoint)
-    res.raise_for_status()
-    data = res.json()
+api_call = '/api/v3/ticker/price'
 
-    # Check if the response is a list or a single dict
-    if isinstance(data, list):
-        df = pd.DataFrame.from_records(data)
-    elif isinstance(data, dict):
-        df = pd.DataFrame.from_records([data])
-    else:
-        raise ValueError("Unexpected data format received from Binance.")
+headers = {'content-type': 'application/json', 
+           'X-MBX-APIKEY': api_key}
 
-    print(df.head())
+response = requests.get(url + api_call, headers=headers)
 
-except Exception as e:
-    print("Error:", e)
+response = json.loads(response.text)
+df = pd.DataFrame.from_records(response)
+df.head()
