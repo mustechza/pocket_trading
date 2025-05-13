@@ -3,9 +3,10 @@ from requests.exceptions import ConnectionError, Timeout, TooManyRedirects
 import json
 import os
 import pandas as pd
-
-api_key = os.getenv('BINANCE_API_KEY_TEST', '')
-api_secret = os.getenv('BINANCE_API_SECRET_TEST', '')
+#API_KEY = "MhSFDGReh9WuilTZikVwW51OGujElIzOilRAoX7sgywPS4YMc5m0FQB67EWU0xfR"
+#API_SECRET = "j7BiDhZgKhaHIlPzNjv5KxQhwn3l0tWPGeVjUexNED4c3b3yEgoIwPMNgdR8nHi7"
+api_key = os.getenv('MhSFDGReh9WuilTZikVwW51OGujElIzOilRAoX7sgywPS4YMc5m0FQB67EWU0xfR', '')
+api_secret = os.getenv('j7BiDhZgKhaHIlPzNjv5KxQhwn3l0tWPGeVjUexNED4c3b3yEgoIwPMNgdR8nHi7', '')
 
 url = 'https://api1.binance.com'
 api_call = '/api/v3/ticker/price'
