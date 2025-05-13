@@ -8,7 +8,7 @@ from streamlit_autorefresh import st_autorefresh
 from sklearn.ensemble import RandomForestClassifier
 import streamlit.components.v1 as components
 
---- SETTINGS ---
+### SETTINGS ###
 
 st.set_page_config(layout="wide")
 REFRESH_INTERVAL = 10  # seconds
@@ -16,11 +16,11 @@ CANDLE_LIMIT = 500
 BINANCE_URL = "https://api.binance.us/api/v3/klines"
 ASSETS = ["ETHUSDT", "SOLUSDT", "ADAUSDT", "BNBUSDT", "XRPUSDT", "LTCUSDT"]
 
---- AUTO REFRESH ---
+### AUTO REFRESH ###
 
 st_autorefresh(interval=REFRESH_INTERVAL * 1000, key="refresh")
 
---- SIDEBAR ---
+### SIDEBAR ###
 
 uploaded_file = st.sidebar.file_uploader("Upload historical data (CSV)", type=["csv"])
 selected_assets = st.sidebar.multiselect("Select Assets", ASSETS, default=ASSETS[:2])
@@ -38,7 +38,7 @@ rsi_period = st.sidebar.number_input("RSI Period", 5, 50, value=14)
 stoch_period = st.sidebar.number_input("Stochastic Period", 5, 50, value=14)
 bb_period = st.sidebar.number_input("Bollinger Band Period", 5, 50, value=20)
 
---- FUNCTIONS ---
+### FUNCTIONS ###
 
 def to_gmt_plus2(ts):
 return ts + timedelta(hours=2)
