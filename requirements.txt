@@ -7,3 +7,4 @@ scikit-learn
 streamlit-autorefresh
 matplotlib
 seaborn
+python-binance
