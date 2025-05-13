@@ -1,11 +1,6 @@
 streamlit
 pandas
-numpy
 requests
-plotly
-scikit-learn
-streamlit-autorefresh
 ta
-websockets
-pandas-ta
-
+scikit-learn
+numpy
