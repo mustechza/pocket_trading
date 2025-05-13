@@ -1,6 +1,6 @@
 streamlit
-pandas
+pandas-ta
 requests
-ta
+
 scikit-learn
 numpy
