@@ -1,11 +1,13 @@
 
 #API_KEY = "MhSFDGReh9WuilTZikVwW51OGujElIzOilRAoX7sgywPS4YMc5m0FQB67EWU0xfR"
 #API_SECRET = "j7BiDhZgKhaHIlPzNjv5KxQhwn3l0tWPGeVjUexNED4c3b3yEgoIwPMNgdR8nHi7"
+import streamlit as st
 import requests
-from requests.exceptions import ConnectionError, Timeout, TooManyRedirects
 import json
 import os
+import pandas as pd  # ✅ This line is required
 
+from requests.exceptions import ConnectionError, Timeout, TooManyRedirects
 
 
 api_key = os.getenv('BINANCE_API_KEY_TEST', 'MhSFDGReh9WuilTZikVwW51OGujElIzOilRAoX7sgywPS4YMc5m0FQB67EWU0xfR')
