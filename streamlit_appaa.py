@@ -402,4 +402,151 @@ def plot_chart(df: pd.DataFrame, asset_symbol: str) -> go.Figure:
     if 'EMA20' in df.columns: fig.add_trace(go.Scatter(x=df['timestamp'], y=df['EMA20'], name="EMA Long", line=dict(color='red')))
     if 'BB_upper' in df.columns and 'BB_lower' in df.columns:
         fig.add_trace(go.Scatter(x=df['timestamp'], y=df['BB_upper'], name="BB Upper", line=dict(color='rgba(152,251,152,0.5)')))
-        fig.add_trace(go.Scatt
+        fig.add_trace(go.Scatter(x=df['timestamp'], y=df['BB_lower'], name="BB Lower", line=dict(color='rgba(152,251,152,0.5)'), fill='tonexty', fillcolor='rgba(152,251,152,0.1)'))
+
+    fig.update_layout(title=f"{asset_symbol} Candlestick Chart", xaxis_rangeslider_visible=False, showlegend=True)
+    return fig
+
+# --- MAIN APPLICATION --- 
+st.title("📈 Pocket Option Signals | Live + Backtest + Money Management")
+
+if 'ml_model' not in st.session_state: st.session_state.ml_model = None
+if 'ml_features' not in st.session_state: st.session_state.ml_features = []
+
+# --- BACKTESTING SECTION ---
+st.header("⚙️ Backtesting")
+if uploaded_file and valid_inputs:
+    df_hist_raw = pd.read_csv(uploaded_file)
+    required_cols = ['timestamp', 'open', 'high', 'low', 'close']
+    actual_cols = df_hist_raw.columns.str.lower().tolist()
+    # Check for columns, case-insensitive
+    df_hist_raw.columns = df_hist_raw.columns.str.lower()
+    missing_cols = [col for col in required_cols if col not in df_hist_raw.columns]
+    
+    df_hist = pd.DataFrame() # Initialize as empty
+
+    if missing_cols:
+        st.error(f"Uploaded CSV is missing required columns: {', '.join(missing_cols)}. Please ensure the CSV contains at least: {', '.join(required_cols)}.")
+    else:
+        try:
+            # Convert essential columns to numeric, coercing errors
+            for col in ['open', 'high', 'low', 'close']:
+                df_hist_raw[col] = pd.to_numeric(df_hist_raw[col], errors='coerce')
+            if 'volume' in df_hist_raw.columns: # volume is optional but good to have
+                 df_hist_raw['volume'] = pd.to_numeric(df_hist_raw['volume'], errors='coerce')
+            
+            df_hist_raw['timestamp'] = pd.to_datetime(df_hist_raw['timestamp'], errors='coerce')
+            
+            # Drop rows where essential data became NaN after conversion
+            df_hist = df_hist_raw.dropna(subset=['timestamp', 'open', 'high', 'low', 'close']).copy() 
+            # df_hist['timestamp'] = df_hist['timestamp'].apply(to_gmt_plus2) # Uncomment if to_gmt_plus2 is defined and needed
+            
+            if df_hist.empty:
+                 st.warning("No valid data rows remaining after cleaning the uploaded CSV. Please check data quality (e.g., non-numeric values, date formats).")
+
+        except Exception as e:
+            st.error(f"Error processing data in uploaded file: {e}. Please check file format and content.")
+            # df_hist remains empty
+
+    if not df_hist.empty:
+        df_hist_indicators = calculate_indicators(df_hist, ema_short_period, ema_long_period, rsi_period_val, stoch_period_val, bb_period_val)
+        signals_hist = []
+
+        if selected_strategy == STRATEGY_ML_MODEL:
+            st.session_state.ml_model, st.session_state.ml_features = train_ml_model(df_hist_indicators)
+            if st.session_state.ml_model:
+                signals_df = predict_with_ml_model(st.session_state.ml_model, df_hist_indicators, st.session_state.ml_features)
+                if not signals_df.empty: signals_hist = signals_df.to_dict(orient='records')
+            else:
+                st.warning("ML Model could not be trained with the uploaded data (or data was insufficient).")
+        else:
+            signals_hist = detect_signals(df_hist_indicators, selected_strategy)
+
+        st.subheader("📌 Last 3 Signal Alerts (Backtest)")
+        if signals_hist:
+            latest_signals_hist = signals_hist[-3:]
+            columns_hist = st.columns(len(latest_signals_hist))
+            for i, s_hist in enumerate(latest_signals_hist):
+                with columns_hist[i]:
+                    st.markdown(f"""
+                    #### 📊 Signal Alert
+                    🧭 **Strategy:** {s_hist['Signal'].split('(')[1][:-1] if '(' in s_hist['Signal'] else selected_strategy}  
+                    🕒 **Entry:** {s_hist['Time'].strftime('%Y-%m-%d %H:%M')}  
+                    ⌛ **Duration:** {s_hist['Trade Duration (min)']} min  
+                    🎯 **Price:** {s_hist['Price']:.5f}  
+                    📢 **Direction:** {s_hist['Signal'].split(' ')[0]}
+                    """)
+        else:
+            st.info("No signals generated for the backtest period with the current strategy and settings.")
+
+        st.subheader("💰 Money Management Simulation (Backtest)")
+        if signals_hist:
+            results_df, metrics = simulate_money_management(signals_hist, mm_strategy=money_strategy, initial_balance=balance_input, risk_pct_trade=risk_pct)
+            st.dataframe(results_df)
+            st.subheader("📈 Performance Metrics (Backtest)")
+            col_m1, col_m2, col_m3, col_m4, col_m5 = st.columns(5)
+            col_m1.metric("Win Rate (%)", f"{metrics['Win Rate (%)']:.2f}")
+            col_m2.metric("ROI (%)", f"{metrics['ROI (%)']:.2f}")
+            col_m3.metric("Max Drawdown (%)", f"{metrics['Max Drawdown (%)']:.2f}")
+            col_m4.metric("Profit Factor", f"{metrics['Profit Factor']:.2f}")
+            col_m5.metric("Total Trades", f"{metrics['Total Trades']}")
+        else:
+            st.info("No signals to simulate money management for backtest.")
+        
+        st.plotly_chart(plot_chart(df_hist_indicators, "Backtest Data"), use_container_width=True)
+    elif uploaded_file and not df_hist.empty: # Only show if file was uploaded but processing failed to produce data
+        st.warning("Uploaded CSV could not be processed successfully. Please check the file content and format.")
+
+elif not uploaded_file:
+    st.info("Upload a CSV file with historical data to run a backtest.")
+elif not valid_inputs:
+    st.warning("Please correct the input errors in the sidebar before running backtest or live signals.")
+
+
+# --- LIVE SIGNALS SECTION ---
+st.header("📡 Live Market Signal Detection")
+if not valid_inputs:
+    st.warning("Please correct the input errors in the sidebar before fetching live signals.")
+elif not selected_assets:
+    st.warning("Please select at least one asset for live signal detection.")
+else:
+    for asset in selected_assets:
+        st.markdown(f"### {asset}")
+        df_live = fetch_candles(asset, limit=CANDLE_LIMIT)
+        
+        if df_live is not None and not df_live.empty:
+            df_live_indicators = calculate_indicators(df_live, ema_short_period, ema_long_period, rsi_period_val, stoch_period_val, bb_period_val)
+            live_signals = []
+
+            if selected_strategy == STRATEGY_ML_MODEL:
+                if st.session_state.ml_model: 
+                    signals_live_df = predict_with_ml_model(st.session_state.ml_model, df_live_indicators, st.session_state.ml_features)
+                    if not signals_live_df.empty: live_signals = signals_live_df.to_dict(orient='records')
+                else:
+                    st.warning(f"ML Model ({STRATEGY_ML_MODEL}) has not been trained. Please upload historical data to train the model first for {asset}.")
+            else:
+                live_signals = detect_signals(df_live_indicators, selected_strategy)
+
+            if live_signals:
+                st.subheader(f"📌 Last 3 Live Signal Alerts for {asset}")
+                latest_live_signals = live_signals[-3:]
+                columns_live = st.columns(len(latest_live_signals))
+                for i, s_live in enumerate(latest_live_signals):
+                    with columns_live[i]:
+                        st.markdown(f"""
+                        #### 📊 Signal Alert
+                        🧭 **Strategy:** {s_live['Signal'].split('(')[1][:-1] if '(' in s_live['Signal'] else selected_strategy}    
+                        🕒 **Entry:** {s_live['Time'].strftime('%Y-%m-%d %H:%M')}  
+                        ⌛ **Duration:** {s_live['Trade Duration (min)']} min  
+                        🎯 **Price:** {s_live['Price']:.5f}  
+                        📢 **Direction:** {s_live['Signal'].split(' ')[0]}
+                        """)
+            else:
+                st.info(f"No live signals detected for {asset} with the current strategy and settings.")
+            
+            st.plotly_chart(plot_chart(df_live_indicators, asset), use_container_width=True)
+        
+        elif df_live is not None and df_live.empty:
+            st.warning(f"No data returned from Binance for {asset}. The symbol might be invalid or the API might be temporarily unavailable.")
+        # If df_live is None, fetch_candles already showed an error message
+
