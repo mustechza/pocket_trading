@@ -17,21 +17,23 @@ BINANCE_URL = "https://api.binance.us/api/v3/klines"
 ASSETS = ["ETHUSDT", "SOLUSDT", "ADAUSDT", "BNBUSDT", "XRPUSDT", "LTCUSDT"]
 
 # --- SIDEBAR ---
-uploaded_file = st.sidebar.file_uploader("Upload historical data (CSV)", type=["csv"])
-selected_assets = st.sidebar.multiselect("Select Assets", ASSETS, default=ASSETS[:2])
-selected_strategy = st.sidebar.selectbox("Strategy", [
-    "EMA Cross", "RSI Divergence", "MACD Cross", "Bollinger Band Bounce",
-    "Stochastic Oscillator", "EMA + RSI Combined", "ML Model (Random Forest)"
-])
-money_strategy = st.sidebar.selectbox("Money Management", ["Flat", "Martingale", "Risk %"])
-risk_pct = st.sidebar.slider("Risk % per Trade", 1, 10, value=2)
-balance_input = st.sidebar.number_input("Initial Balance ($)", value=1000)
+with st.sidebar:
+    uploaded_file = st.file_uploader("Upload historical data (CSV)", type=["csv"])
+    selected_assets = st.multiselect("Select Assets", ASSETS, default=ASSETS[:2])
+    selected_strategy = st.selectbox("Strategy", [
+        "EMA Cross", "RSI Divergence", "MACD Cross", "Bollinger Band Bounce",
+        "Stochastic Oscillator", "EMA + RSI Combined", "ML Model (Random Forest)"
+    ])
+    money_strategy = st.selectbox("Money Management", ["Flat", "Martingale", "Risk %"])
+    risk_pct = st.slider("Risk % per Trade", 1, 10, value=2)
+    balance_input = st.number_input("Initial Balance ($)", value=1000)
 
-ema_short = st.sidebar.number_input("EMA Short Period", 2, 50, value=5)
-ema_long = st.sidebar.number_input("EMA Long Period", 5, 100, value=20)
-rsi_period = st.sidebar.number_input("RSI Period", 5, 50, value=14)
-stoch_period = st.sidebar.number_input("Stochastic Period", 5, 50, value=14)
-bb_period = st.sidebar.number_input("Bollinger Band Period", 5, 50, value=20)
+    # Indicator Parameters
+    ema_short = st.number_input("EMA Short Period", 2, 50, value=5)
+    ema_long = st.number_input("EMA Long Period", 5, 100, value=20)
+    rsi_period = st.number_input("RSI Period", 5, 50, value=14)
+    stoch_period = st.number_input("Stochastic Period", 5, 50, value=14)
+    bb_period = st.number_input("Bollinger Band Period", 5, 50, value=20)
 
 # --- TIMEZONE UTILITY ---
 def to_gmt_plus2(ts):
@@ -88,6 +90,7 @@ def generate_signal(timestamp, signal_type, price):
         "Trade Duration (min)": duration
     }
 
+# --- SIGNAL DETECTION ---
 def detect_signals(df, strategy):
     signals = []
     for i in range(1, len(df)):
@@ -136,9 +139,10 @@ def detect_signals(df, strategy):
                 signals.append(generate_signal(t, "Buy (EMA+RSI)", price))
             elif ema5_prev > ema20_prev and ema5 < ema20 and rsi > 60:
                 signals.append(generate_signal(t, "Sell (EMA+RSI)", price))
+
     return signals
 
-# --- ML MODEL ---
+# --- MACHINE LEARNING ---
 def train_ml_model(df):
     df = df.copy()
     df['target'] = (df['close'].shift(-2) > df['close']).astype(int)
@@ -185,7 +189,7 @@ def simulate_money_management(signals, strategy="Flat", initial_balance=1000, ri
         "Profit Factor": profit_factor
     }
 
-# --- CHART ---
+# --- PLOTTING ---
 def plot_chart(df, title):
     fig = go.Figure()
     fig.add_trace(go.Candlestick(
@@ -196,61 +200,5 @@ def plot_chart(df, title):
     fig.update_layout(title=title, xaxis_rangeslider_visible=False)
     return fig
 
-# --- TITLE ---
-st.title("📈 Pocket Option Signals | Live + Backtest + Money Management")
-
-# --- BACKTEST ---
-if uploaded_file:
-    df = pd.read_csv(uploaded_file)
-    df['timestamp'] = pd.to_datetime(df['timestamp']).apply(to_gmt_plus2)
-    df = calculate_indicators(df)
-
-    signals = train_ml_model(df).to_dict('records') if selected_strategy == "ML Model (Random Forest)" else detect_signals(df, selected_strategy)
-
-    st.subheader("📌 Last 3 Signal Alerts")
-    latest_signals = signals[-3:]
-    cols = st.columns(len(latest_signals))
-    for i, s in enumerate(latest_signals):
-        with cols[i]:
-            st.markdown(f"""
-            ### 📊 Signal Alert  
-            🧭 **{selected_strategy}**  
-            🕒 **Entry:** {s['Time'].strftime('%H:%M')}  
-            ⌛ **Duration:** {s['Trade Duration (min)']} min  
-            🎯 **Price:** {s['Price']:.4f}  
-            🟩 **Direction:** {s['Signal']}  
-            """)
-
-    st.subheader("💰 Money Management Simulation")
-    results_df, metrics = simulate_money_management(signals, money_strategy, balance_input, risk_pct)
-    st.dataframe(results_df)
-
-    st.subheader("📈 Performance Metrics")
-    for k, v in metrics.items():
-        st.metric(k, f"{v:.2f}")
-
-    st.plotly_chart(plot_chart(df, "Backtest Data"), use_container_width=True)
-
-# --- LIVE ---
-st.subheader("📡 Live Signal Detection")
-for asset in selected_assets:
-    df_live = fetch_candles(asset)
-    if df_live is not None:
-        df_live = calculate_indicators(df_live)
-        if selected_strategy != "ML Model (Random Forest)":
-            live_signals = detect_signals(df_live, selected_strategy)
-            if live_signals:
-                st.markdown(f"### 🔔 {asset}")
-                latest_live = live_signals[-3:]
-                cols = st.columns(len(latest_live))
-                for i, s in enumerate(latest_live):
-                    with cols[i]:
-                        st.markdown(f"""
-                        ### 📊 Signal Alert  
-                        🧭 **{selected_strategy}**  
-                        🕒 **Entry:** {s['Time'].strftime('%H:%M')}  
-                        ⌛ **Duration:** {s['Trade Duration (min)']} min  
-                        🎯 **Price:** {s['Price']:.4f}  
-                        🟩 **Direction:** {s['Signal']}  
-                        """)
-        st.plotly_chart(plot_chart(df_live, asset), use_container_width=True)
+# --- MAIN PAGE ---
+st.title("\ud83d\udcc8 Pocket Option Signals | Live + Backtest + Money Management")
