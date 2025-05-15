@@ -1,7 +1,6 @@
-streamlit
-pandas
-numpy
-requests
-plotly
-streamlit-autorefresh
-scikit-learn
+streamlit==1.33.0
+pandas==2.2.2
+numpy==1.26.4
+websockets==12.0
+plotly==5.21.0
+pytz==2024.1
