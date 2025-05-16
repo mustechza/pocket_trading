@@ -4,5 +4,3 @@ pandas
 numpy
 websocket-client
 pytz
-json
-asyncio
