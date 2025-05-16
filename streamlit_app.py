@@ -14,9 +14,9 @@ tz = pytz.timezone("Africa/Johannesburg")
 # App config
 st.set_page_config(page_title="Deriv Signal App", layout="wide")
 
-# Initialize session state for connection
-if 'ws_connected' not in st.session_state:
-    st.session_state.ws_connected = False
+# --- SESSION STATE INIT ---
+if "ws_status" not in st.session_state:
+    st.session_state.ws_status = '🔴 Disconnected'
 
 # --- SIDEBAR ---
 st.sidebar.title("🔑 Deriv API & Strategy Settings")
@@ -26,7 +26,7 @@ symbol = st.sidebar.selectbox("Select Market", ["R_100", "R_75", "R_50"])
 interval = st.sidebar.selectbox("Candle Interval", ["1m", "5m", "10m"])
 strategy = st.sidebar.selectbox("Select Strategy", ["EMA Crossover", "RSI", "MACD"])
 trade_duration = st.sidebar.number_input("Trade Duration (minutes)", 1, 60, 2)
-confidence_threshold = st.sidebar.slider("Min Confidence %", 0, 100, 70)
+min_confidence = st.sidebar.slider("Min Confidence %", 0, 100, 70)
 backtest_btn = st.sidebar.button("🔁 Run Backtest")
 
 # Strategy params
@@ -42,16 +42,16 @@ macd_signal = st.sidebar.number_input("MACD Signal", 5, 20, 9)
 
 # --- Signal Store ---
 signal_store = []
+latest_df = pd.DataFrame()
 
 # --- Strategy Logic ---
 def apply_strategy(df, strategy_name):
-    if df.empty: return pd.DataFrame()
-
     df = df.copy()
     if strategy_name == "EMA Crossover":
         df['EMA_Fast'] = df['close'].ewm(span=fast_ema).mean()
         df['EMA_Slow'] = df['close'].ewm(span=slow_ema).mean()
         df['Signal'] = np.where(df['EMA_Fast'] > df['EMA_Slow'], 'Buy', 'Sell')
+        df['Confidence'] = (abs(df['EMA_Fast'] - df['EMA_Slow']) / df['close']) * 100
 
     elif strategy_name == "RSI":
         delta = df['close'].diff()
@@ -63,6 +63,7 @@ def apply_strategy(df, strategy_name):
         df['RSI'] = 100 - (100 / (1 + rs))
         df['Signal'] = np.where(df['RSI'] < rsi_oversold, 'Buy',
                         np.where(df['RSI'] > rsi_overbought, 'Sell', 'Hold'))
+        df['Confidence'] = 100 - abs(df['RSI'] - 50)
 
     elif strategy_name == "MACD":
         ema_fast = df['close'].ewm(span=macd_fast).mean()
@@ -72,21 +73,22 @@ def apply_strategy(df, strategy_name):
         df['MACD'] = macd_line
         df['Signal_Line'] = signal_line
         df['Signal'] = np.where(macd_line > signal_line, 'Buy', 'Sell')
+        df['Confidence'] = (abs(macd_line - signal_line) / df['close']) * 100
 
     df['Signal_Time'] = df.index
     df.dropna(inplace=True)
-    df['Confidence'] = np.random.randint(50, 100, len(df))  # Simulated confidence
-    return df[df['Signal'].isin(['Buy', 'Sell']) & (df['Confidence'] >= confidence_threshold)].tail(3)
+    return df[(df['Signal'].isin(['Buy', 'Sell'])) & (df['Confidence'] >= min_confidence)].tail(3)
 
-# --- WebSocket Thread ---
-latest_df = pd.DataFrame()
-
+# --- WebSocket Logic ---
 def run_websocket():
+    global latest_df
+
     def on_message(ws, message):
         global latest_df
         data = json.loads(message)
 
         if 'ohlc' in data.get('msg_type', ''):
+            st.session_state.ws_status = '🟢 Connected'
             ohlc = data['ohlc']
             time_gmt = datetime.fromtimestamp(ohlc['open_time'], tz)
             new_row = {
@@ -102,8 +104,9 @@ def run_websocket():
             latest_df = df
 
     def on_open(ws):
-        st.session_state.ws_connected = True
-        ws.send(json.dumps({"authorize": api_key}))
+        st.session_state.ws_status = '🟢 Connected'
+        auth_msg = {"authorize": api_key}
+        ws.send(json.dumps(auth_msg))
         time.sleep(1)
         ws.send(json.dumps({
             "ticks_history": symbol,
@@ -115,10 +118,15 @@ def run_websocket():
         }))
 
     def on_error(ws, error):
-        st.session_state.ws_connected = False
+        st.session_state.ws_status = '🔴 Error'
+        print("WebSocket Error:", error)
 
-    def on_close(ws):
-        st.session_state.ws_connected = False
+    def on_close(ws, close_status_code, close_msg):
+        st.session_state.ws_status = '🔴 Disconnected'
+        print(f"WebSocket Closed: {close_status_code} - {close_msg}")
+        # Reconnect after short delay
+        time.sleep(3)
+        run_websocket()
 
     ws = websocket.WebSocketApp(
         "wss://ws.binaryws.com/websockets/v3?app_id=1089",
@@ -133,14 +141,12 @@ def run_websocket():
 if api_key:
     threading.Thread(target=run_websocket, daemon=True).start()
 
-# --- Live Signal Display ---
+# --- UI ---
 st.title("📡 Deriv Crypto Signal Dashboard")
+st.markdown(f"**{st.session_state.ws_status} WebSocket Status**")
+st.caption(f"Market: {symbol} Index | Interval: {interval} | Strategy: {strategy} | Min Confidence: {min_confidence}%")
 
-status_emoji = "🟢" if st.session_state.ws_connected else "🔴"
-st.markdown(f"### {status_emoji} WebSocket Status: {'Connected' if st.session_state.ws_connected else 'Disconnected'}")
-
-st.caption(f"Market: {symbol} Index | Interval: {interval} | Strategy: {strategy} | Min Confidence: {confidence_threshold}%")
-
+# --- Live Signal Display ---
 if not latest_df.empty:
     signals = apply_strategy(latest_df.copy(), strategy)
     if not signals.empty:
@@ -149,16 +155,17 @@ if not latest_df.empty:
             expiration = (row.name + timedelta(minutes=trade_duration)).strftime("%H:%M")
             st.markdown(f"""
             <div style='background-color:#f8f9fa;padding:15px;border-radius:12px;margin:10px 0;box-shadow:2px 2px 6px #ccc'>
-                <h4 style='color:#333'>💡 Signal: <b>{row['Signal']}</b> ({row['Confidence']}% confidence)</h4>
+                <h4 style='color:#333'>💡 Signal: <b>{row['Signal']}</b></h4>
                 <ul>
                     <li><b>Entry Time:</b> {entry_time}</li>
                     <li><b>Expires:</b> {expiration}</li>
                     <li><b>Price:</b> {row['close']:.2f}</li>
+                    <li><b>Confidence:</b> {row['Confidence']:.1f}%</li>
                 </ul>
             </div>
             """, unsafe_allow_html=True)
     else:
-        st.info("Waiting for signals...")
+        st.info("Waiting for qualifying signals...")
 else:
     st.warning("Waiting for market data...")
 
@@ -167,5 +174,5 @@ if backtest_btn and not latest_df.empty:
     with st.spinner("Running backtest..."):
         df_bt = apply_strategy(latest_df.copy(), strategy)
         trades = df_bt['Signal']
-        win_rate = np.random.uniform(50, 80)  # placeholder
+        win_rate = np.random.uniform(50, 80)  # Placeholder
         st.success(f"Backtest complete: {len(trades)} trades, ~{win_rate:.1f}% estimated win rate")
