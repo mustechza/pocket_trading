@@ -1,3 +1,9 @@
 streamlit
-python-deriv-api
-websockets
+pandas
+numpy
+websocket
+threading
+json
+time
+datetime
+pytz
