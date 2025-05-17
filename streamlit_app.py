@@ -22,8 +22,6 @@ if "ws_thread_started" not in st.session_state:
 
 # --- SIDEBAR ---
 st.sidebar.title("🔑 Deriv API & Strategy Settings")
-
-# --- API KEY ---
 api_key = st.sidebar.text_input("Enter your Deriv API Key", type="password")
 
 symbol = st.sidebar.selectbox("Select Market", ["R_100", "R_75", "R_50"])
@@ -112,11 +110,15 @@ def run_websocket():
         auth_msg = {"authorize": api_key}
         ws.send(json.dumps(auth_msg))
         time.sleep(1)
+
+        granularity_map = {"1m": 60, "5m": 300, "10m": 600}
+        granularity = granularity_map[interval]
+
         ws.send(json.dumps({
             "ticks_history": symbol,
             "adjust_start_time": 1,
             "count": 100,
-            "granularity": {"1m": 60, "5m": 300, "10m": 600}[interval],
+            "granularity": granularity,
             "style": "candles",
             "subscribe": 1
         }))
@@ -128,8 +130,9 @@ def run_websocket():
     def on_close(ws, close_status_code, close_msg):
         st.session_state.ws_status = '🔴 Disconnected'
         print(f"WebSocket Closed: {close_status_code} - {close_msg}")
+        # Optional: Auto-reconnect
         time.sleep(3)
-        run_websocket()  # Retry connection
+        run_websocket()
 
     ws = websocket.WebSocketApp(
         "wss://ws.binaryws.com/websockets/v3?app_id=76035",
@@ -140,10 +143,10 @@ def run_websocket():
     )
     ws.run_forever()
 
-# --- Start WebSocket Thread if API key is entered ---
+# --- Start WebSocket Thread ---
 if api_key and not st.session_state.ws_thread_started:
-    threading.Thread(target=run_websocket, daemon=True).start()
     st.session_state.ws_thread_started = True
+    threading.Thread(target=run_websocket, daemon=True).start()
 
 # --- UI ---
 st.title("📡 Deriv Crypto Signal Dashboard")
