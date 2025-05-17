@@ -4,7 +4,7 @@ pocketbot
 Token
 LzEia6i68JSBV4v
 
-Last Used
-Never
 
-Scopes
+
+pocketbot2
+AAumwrRZHytQVQ8
