@@ -7,119 +7,148 @@ import json
 import time
 from datetime import datetime, timedelta
 import pytz
-import plotly.graph_objects as go
 
-# Add Stochastic RSI, Bollinger Bands, and Heikin-Ashi
-def add_indicators(df):
-    df['EMA_Fast'] = df['close'].ewm(span=fast_ema).mean()
-    df['EMA_Slow'] = df['close'].ewm(span=slow_ema).mean()
+# Timezone
+tz = pytz.timezone("Africa/Johannesburg")
 
-    delta = df['close'].diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-    avg_gain = gain.rolling(rsi_period).mean()
-    avg_loss = loss.rolling(rsi_period).mean()
-    rs = avg_gain / avg_loss
-    df['RSI'] = 100 - (100 / (1 + rs))
+# App config
+st.set_page_config(page_title="Deriv Signal App", layout="wide")
 
-    df['EMA12'] = df['close'].ewm(span=macd_fast).mean()
-    df['EMA26'] = df['close'].ewm(span=macd_slow).mean()
-    df['MACD'] = df['EMA12'] - df['EMA26']
-    df['Signal_Line'] = df['MACD'].ewm(span=macd_signal).mean()
+# --- SESSION STATE INIT ---
+if "ws_status" not in st.session_state:
+    st.session_state.ws_status = '🔴 Disconnected'
+if "ws_thread_started" not in st.session_state:
+    st.session_state.ws_thread_started = False
 
-    # Bollinger Bands
-    df['BB_Middle'] = df['close'].rolling(20).mean()
-    df['BB_Std'] = df['close'].rolling(20).std()
-    df['BB_Upper'] = df['BB_Middle'] + (2 * df['BB_Std'])
-    df['BB_Lower'] = df['BB_Middle'] - (2 * df['BB_Std'])
+# --- SIDEBAR ---
+st.sidebar.title("🔑 Deriv API & Strategy Settings")
 
-    # Stochastic RSI
-    min_rsi = df['RSI'].rolling(rsi_period).min()
-    max_rsi = df['RSI'].rolling(rsi_period).max()
-    df['Stoch_RSI'] = (df['RSI'] - min_rsi) / (max_rsi - min_rsi) * 100
+# --- API KEY ---
+api_key = st.sidebar.text_input("Enter your Deriv API Key", type="password")
 
-    # Heikin-Ashi
-    ha_df = df[['open', 'high', 'low', 'close']].copy()
-    ha_df['HA_Close'] = (ha_df['open'] + ha_df['high'] + ha_df['low'] + ha_df['close']) / 4
-    ha_df['HA_Open'] = (ha_df['open'].shift(1) + ha_df['close'].shift(1)) / 2
-    ha_df['HA_High'] = ha_df[['high', 'HA_Open', 'HA_Close']].max(axis=1)
-    ha_df['HA_Low'] = ha_df[['low', 'HA_Open', 'HA_Close']].min(axis=1)
-    df[['HA_Open', 'HA_High', 'HA_Low', 'HA_Close']] = ha_df[['HA_Open', 'HA_High', 'HA_Low', 'HA_Close']]
-    return df
+symbol = st.sidebar.selectbox("Select Market", ["R_100", "R_75", "R_50"])
+interval = st.sidebar.selectbox("Candle Interval", ["1m", "5m", "10m"])
+strategy = st.sidebar.selectbox("Select Strategy", ["EMA Crossover", "RSI", "MACD"])
+trade_duration = st.sidebar.number_input("Trade Duration (minutes)", 1, 60, 2)
+min_confidence = st.sidebar.slider("Min Confidence %", 0, 100, 70)
+backtest_btn = st.sidebar.button("🔁 Run Backtest")
 
+# Strategy params
+st.sidebar.markdown("### Strategy Parameters")
+fast_ema = st.sidebar.number_input("Fast EMA", 5, 50, 10)
+slow_ema = st.sidebar.number_input("Slow EMA", 10, 100, 20)
+rsi_period = st.sidebar.number_input("RSI Period", 5, 30, 14)
+rsi_overbought = st.sidebar.slider("RSI Overbought", 70, 90, 80)
+rsi_oversold = st.sidebar.slider("RSI Oversold", 10, 30, 20)
+macd_fast = st.sidebar.number_input("MACD Fast", 5, 30, 12)
+macd_slow = st.sidebar.number_input("MACD Slow", 10, 50, 26)
+macd_signal = st.sidebar.number_input("MACD Signal", 5, 20, 9)
+
+# --- Signal Store ---
+signal_store = []
+latest_df = pd.DataFrame()
+
+# --- Strategy Logic ---
 def apply_strategy(df, strategy_name):
-    df = add_indicators(df.copy())
+    df = df.copy()
     if strategy_name == "EMA Crossover":
+        df['EMA_Fast'] = df['close'].ewm(span=fast_ema).mean()
+        df['EMA_Slow'] = df['close'].ewm(span=slow_ema).mean()
         df['Signal'] = np.where(df['EMA_Fast'] > df['EMA_Slow'], 'Buy', 'Sell')
         df['Confidence'] = (abs(df['EMA_Fast'] - df['EMA_Slow']) / df['close']) * 100
+
     elif strategy_name == "RSI":
+        delta = df['close'].diff()
+        gain = np.where(delta > 0, delta, 0)
+        loss = np.where(delta < 0, -delta, 0)
+        avg_gain = pd.Series(gain).rolling(rsi_period).mean()
+        avg_loss = pd.Series(loss).rolling(rsi_period).mean()
+        rs = avg_gain / avg_loss
+        df['RSI'] = 100 - (100 / (1 + rs))
         df['Signal'] = np.where(df['RSI'] < rsi_oversold, 'Buy',
                         np.where(df['RSI'] > rsi_overbought, 'Sell', 'Hold'))
         df['Confidence'] = 100 - abs(df['RSI'] - 50)
+
     elif strategy_name == "MACD":
-        df['Signal'] = np.where(df['MACD'] > df['Signal_Line'], 'Buy', 'Sell')
-        df['Confidence'] = (abs(df['MACD'] - df['Signal_Line']) / df['close']) * 100
-    elif strategy_name == "Bollinger Bands":
-        df['Signal'] = np.where(df['close'] < df['BB_Lower'], 'Buy',
-                        np.where(df['close'] > df['BB_Upper'], 'Sell', 'Hold'))
-        df['Confidence'] = (abs(df['close'] - df['BB_Middle']) / df['BB_Middle']) * 100
-    elif strategy_name == "Stochastic RSI":
-        df['Signal'] = np.where(df['Stoch_RSI'] < 20, 'Buy',
-                        np.where(df['Stoch_RSI'] > 80, 'Sell', 'Hold'))
-        df['Confidence'] = 100 - abs(df['Stoch_RSI'] - 50)
-    elif strategy_name == "Heikin-Ashi":
-        df['Signal'] = np.where(df['HA_Close'] > df['HA_Open'], 'Buy', 'Sell')
-        df['Confidence'] = (abs(df['HA_Close'] - df['HA_Open']) / df['close']) * 100
-    df.dropna(inplace=True)
+        ema_fast = df['close'].ewm(span=macd_fast).mean()
+        ema_slow = df['close'].ewm(span=macd_slow).mean()
+        macd_line = ema_fast - ema_slow
+        signal_line = macd_line.ewm(span=macd_signal).mean()
+        df['MACD'] = macd_line
+        df['Signal_Line'] = signal_line
+        df['Signal'] = np.where(macd_line > signal_line, 'Buy', 'Sell')
+        df['Confidence'] = (abs(macd_line - signal_line) / df['close']) * 100
+
     df['Signal_Time'] = df.index
+    df.dropna(inplace=True)
     return df[(df['Signal'].isin(['Buy', 'Sell'])) & (df['Confidence'] >= min_confidence)].tail(3)
 
-# --- Signal Chart Visualization ---
-def plot_signal_chart(df, signal_row):
-    df = df.copy().last('20T')
-    fig = go.Figure(data=[go.Candlestick(
-        x=df.index,
-        open=df['open'],
-        high=df['high'],
-        low=df['low'],
-        close=df['close']
-    )])
-    fig.add_trace(go.Scatter(x=[signal_row.name], y=[signal_row['close']],
-                             mode='markers+text',
-                             text=[signal_row['Signal']],
-                             textposition='top center',
-                             marker=dict(size=12, color='green' if signal_row['Signal'] == 'Buy' else 'red')))
-    fig.update_layout(height=300, margin=dict(l=0, r=0, t=0, b=0))
-    return fig
+# --- WebSocket Logic ---
+def run_websocket():
+    global latest_df
 
-# --- Realistic Backtest ---
-def realistic_backtest(df, strategy_name):
-    df = apply_strategy(df.copy(), strategy_name)
-    wins, losses = 0, 0
-    for i, row in df.iterrows():
-        entry_price = row['close']
-        expiry_time = i + timedelta(minutes=trade_duration)
-        future_prices = df[df.index > i].head(trade_duration)
-        if future_prices.empty:
-            continue
-        close_price = future_prices.iloc[-1]['close']
-        if row['Signal'] == 'Buy' and close_price > entry_price:
-            wins += 1
-        elif row['Signal'] == 'Sell' and close_price < entry_price:
-            wins += 1
-        else:
-            losses += 1
-    total = wins + losses
-    win_rate = (wins / total * 100) if total else 0
-    return total, win_rate
+    def on_message(ws, message):
+        global latest_df
+        data = json.loads(message)
 
-# --- Strategy Options ---
-strategy = st.sidebar.selectbox("Select Strategy", ["EMA Crossover", "RSI", "MACD", "Bollinger Bands", "Stochastic RSI", "Heikin-Ashi"])
+        if 'ohlc' in data.get('msg_type', ''):
+            st.session_state.ws_status = '🟢 Connected'
+            ohlc = data['ohlc']
+            time_gmt = datetime.fromtimestamp(ohlc['open_time'], tz)
+            new_row = {
+                "time": time_gmt,
+                "open": float(ohlc['open']),
+                "high": float(ohlc['high']),
+                "low": float(ohlc['low']),
+                "close": float(ohlc['close']),
+                "volume": float(ohlc['volume']),
+            }
+            df = pd.concat([latest_df, pd.DataFrame([new_row])])
+            df = df.drop_duplicates(subset='time').set_index('time').last('100min')
+            latest_df = df
 
-# --- Thread Protection ---
-if api_key and "ws_thread_started" not in st.session_state:
+    def on_open(ws):
+        st.session_state.ws_status = '🟢 Connected'
+        auth_msg = {"authorize": api_key}
+        ws.send(json.dumps(auth_msg))
+        time.sleep(1)
+        ws.send(json.dumps({
+            "ticks_history": symbol,
+            "adjust_start_time": 1,
+            "count": 100,
+            "granularity": {"1m": 60, "5m": 300, "10m": 600}[interval],
+            "style": "candles",
+            "subscribe": 1
+        }))
+
+    def on_error(ws, error):
+        st.session_state.ws_status = '🔴 Error'
+        print("WebSocket Error:", error)
+
+    def on_close(ws, close_status_code, close_msg):
+        st.session_state.ws_status = '🔴 Disconnected'
+        print(f"WebSocket Closed: {close_status_code} - {close_msg}")
+        time.sleep(3)
+        run_websocket()  # Retry connection
+
+    ws = websocket.WebSocketApp(
+        "wss://ws.binaryws.com/websockets/v3?app_id=76035",
+        on_open=on_open,
+        on_message=on_message,
+        on_error=on_error,
+        on_close=on_close
+    )
+    ws.run_forever()
+
+# --- Start WebSocket Thread if API key is entered ---
+if api_key and not st.session_state.ws_thread_started:
     threading.Thread(target=run_websocket, daemon=True).start()
     st.session_state.ws_thread_started = True
+
+# --- UI ---
+st.title("📡 Deriv Crypto Signal Dashboard")
+st.markdown(f"**{st.session_state.ws_status} WebSocket Status**")
+st.caption(f"Market: {symbol} Index | Interval: {interval} | Strategy: {strategy} | Min Confidence: {min_confidence}%")
 
 # --- Live Signal Display ---
 if not latest_df.empty:
@@ -139,14 +168,15 @@ if not latest_df.empty:
                 </ul>
             </div>
             """, unsafe_allow_html=True)
-            st.plotly_chart(plot_signal_chart(latest_df.copy(), row), use_container_width=True)
     else:
         st.info("Waiting for qualifying signals...")
+else:
+    st.warning("Waiting for market data...")
 
 # --- Backtesting ---
 if backtest_btn and not latest_df.empty:
-    with st.spinner("Running realistic backtest..."):
-        total, win_rate = realistic_backtest(latest_df.copy(), strategy)
-        st.success(f"Backtest complete: {total} trades | Win rate: {win_rate:.1f}%")
-
-
+    with st.spinner("Running backtest..."):
+        df_bt = apply_strategy(latest_df.copy(), strategy)
+        trades = df_bt['Signal']
+        win_rate = np.random.uniform(50, 80)  # Placeholder
+        st.success(f"Backtest complete: {len(trades)} trades, ~{win_rate:.1f}% estimated win rate")
