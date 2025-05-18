@@ -1,6 +1,6 @@
-streamlit
-pandas
-numpy
-websocket-client
-pytz
-python_deriv_api
+streamlit==1.33.0
+pandas==2.2.2
+numpy==1.26.4
+websocket-client==1.7.0
+pytz==2024.1
+matplotlib==3.8.4
