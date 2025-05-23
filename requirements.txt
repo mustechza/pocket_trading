@@ -7,4 +7,4 @@ pytz==2024.1
 matplotlib==3.8.4
 plotly
 streamlit-autorefresh
-
+sklearn
