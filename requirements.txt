@@ -6,3 +6,5 @@ websocket-client==1.7.0
 pytz==2024.1
 matplotlib==3.8.4
 plotly
+streamlit-autorefresh
+
