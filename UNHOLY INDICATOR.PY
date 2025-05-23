@@ -339,5 +339,122 @@ ax.legend(loc='best')
 plt.show()
 
 
+def convert_pine_to_python_signals(df: pd.DataFrame,
+                                   lookback: int = 35,
+                                   use_supertrend: bool = True,
+                                   use_supertrend_raw: bool = True,
+                                   use_rsi_signal: bool = True,
+                                   enable_advanced_alerts: bool = False) -> pd.DataFrame:
+    """
+    Given a DataFrame `df` with the required Pine-script-derived boolean columns,
+    this function computes equivalent buy/sell watch signals, final signals,
+    and alert flags as new columns in the DataFrame.
+
+    Required boolean columns in `df`:
+      - priceUnderLowerInner, priceOverUpperInner
+      - rsiCrossOverLower, rsiCrossUnderUpper
+      - shortRsiOver30, shortRsiUnder70
+      - deadCrossOver, deadCrossUnder
+      - superTrendBuyTrigger, superTrendSellTrigger
+      - barConfirm  # True when barstate.isconfirmed in Pine
+
+    Returns a new DataFrame with additional columns:
+      - buyWatched, sellWatched
+      - buyWatchCount, sellWatchCount
+      - buyWatchMet, sellWatchMet
+      - superBuySignal, superSellSignal
+      - rsiBuySignal, rsiSellSignal
+      - buySignal, sellSignal
+      - effectiveBuyWatchMet, effectiveSellWatchMet
+      - plotBuyBG, plotSellBG
+      - plotBuy, plotSell
+      - alertBuy, alertSell
+    """
+    df = df.copy()
+
+    # 1. Watch triggers
+    df['buyWatched'] = (
+        df['priceUnderLowerInner'] |
+        df['rsiCrossOverLower'] |
+        df['shortRsiOver30']
+    ) & df['barConfirm']
+    df['sellWatched'] = (
+        df['priceOverUpperInner'] |
+        df['rsiCrossUnderUpper'] |
+        df['shortRsiUnder70']
+    ) & df['barConfirm']
+
+    # 2. Rolling sum over `lookback` bars
+    df['buyWatchCount'] = (
+        df['buyWatched']
+        .astype(int)
+        .rolling(window=lookback, min_periods=1)
+        .sum()
+    )
+    df['sellWatchCount'] = (
+        df['sellWatched']
+        .astype(int)
+        .rolling(window=lookback, min_periods=1)
+        .sum()
+    )
+
+    df['buyWatchMet'] = df['buyWatchCount'] >= 1
+    df['sellWatchMet'] = df['sellWatchCount'] >= 1
+
+    # 3. Supertrend signals
+    df['superBuySignal'] = use_supertrend & df['superTrendBuyTrigger']
+    df['superSellSignal'] = use_supertrend & df['superTrendSellTrigger']
+
+    # 4. RSI signals
+    df['rsiBuySignal'] = use_rsi_signal & df['deadCrossOver'] & df['buyWatchMet']
+    df['rsiSellSignal'] = use_rsi_signal & df['deadCrossUnder'] & df['sellWatchMet']
+
+    # 5. Combine final triggers
+    df['buySignal'] = df['superBuySignal'] | df['rsiBuySignal']
+    df['sellSignal'] = df['superSellSignal'] | df['rsiSellSignal']
+
+    # 6. Effective watch filters when raw supertrend is on
+    df['effectiveBuyWatchMet'] = np.where(
+        use_supertrend and use_supertrend_raw,
+        True,
+        df['buyWatchMet']
+    )
+    df['effectiveSellWatchMet'] = np.where(
+        use_supertrend and use_supertrend_raw,
+        True,
+        df['sellWatchMet']
+    )
+
+    # 7. Background (advanced) signals
+    df['plotBuyBG'] = False
+    df['plotSellBG'] = False
+    buy_bg_idx = df['buySignal'] & df['effectiveBuyWatchMet']
+    sell_bg_idx = df['sellSignal'] & df['effectiveSellWatchMet'] & ~buy_bg_idx
+    df.loc[buy_bg_idx, 'plotBuyBG'] = True
+    df.loc[sell_bg_idx, 'plotSellBG'] = True
+
+    # 8. Confirmed (final) signals at bar close
+    df['plotBuy'] = False
+    df['plotSell'] = False
+    buy_conf_idx = buy_bg_idx & df['barConfirm']
+    sell_conf_idx = sell_bg_idx & df['barConfirm'] & ~buy_conf_idx
+    df.loc[buy_conf_idx, 'plotBuy'] = True
+    df.loc[sell_conf_idx, 'plotSell'] = True
+
+    # 9. Alerts based on advanced vs. confirmed
+    df['alertBuy'] = np.where(
+        enable_advanced_alerts,
+        df['plotBuyBG'],
+        df['plotBuy']
+    )
+    df['alertSell'] = np.where(
+        enable_advanced_alerts,
+        df['plotSellBG'],
+        df['plotSell']
+    )
+
+    return df
+
+
 
 
