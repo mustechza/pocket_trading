@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import pandas_ta as ta
-
+import matplotlib.pyplot as plt
 
 # ====== User Input Settings ======
 with st.sidebar.expander("Show/Hide ALL"):
@@ -220,6 +220,123 @@ def compute_indicators(
 
     return df
 
+
+
+# --- User settings (example values) ---
+band_transparency = 0.3
+bull_bear_ma_length = 20
+bull_bear_ma_type = "ema"        # 'sma', 'ema', etc.
+show_bollinger = True
+upper_bb_color_up = (0.0, 1.0, 0.0)    # matplotlib RGB tuples
+upper_bb_color_down = (1.0, 0.0, 0.0)
+lower_bb_color_up = (0.0, 0.0, 1.0)
+lower_bb_color_down = (1.0, 1.0, 0.0)
+show_basis = True
+basis_color = 'gray'
+
+# MA selections
+ma_lengths = [10, 20, 50, 100, 200, 5, 7, 14]
+ma_types   = ['sma','ema','sma','ema','sma','ema','sma','ema']
+ma_colors  = ['#ff0000','#00ff00','#0000ff','#ff00ff','#00ffff','#ffff00','#888888','#444444']
+show_all_ma = True
+show_ma     = [True]*8  # toggle individual MAs
+
+# Fast/slow MA for candle coloring
+fast_ma_len, fast_ma_type = 5, 'ema'
+slow_ma_len, slow_ma_type = 20, 'sma'
+
+# --- Helper to compute a moving average of a given type ---
+def MA(series, length, ma_type):
+    if ma_type.lower() == 'sma':
+        return series.rolling(length).mean()
+    elif ma_type.lower() == 'ema':
+        return series.ewm(span=length, adjust=False).mean()
+    else:
+        raise ValueError(f"Unsupported MA type: {ma_type}")
+
+# --- Compute the bull/bear MA ---
+df['bullBearMA'] = MA(df['close'], bull_bear_ma_length, bull_bear_ma_type)
+df['maBullish']  = df['close'] >= df['bullBearMA']
+df['maBearish']  = df['close'] <  df['bullBearMA']
+
+# Upper Bollinger band fill color
+def band_color(cond, up_color, down_color):
+    """Return RGBA tuple based on condition and base RGB + transparency."""
+    rgb = np.array(up_color) if cond else np.array(down_color)
+    return (*rgb, band_transparency)
+
+df['upperBandColor'] = df['maBullish'].map(
+    lambda b: band_color(b, upper_bb_color_up, upper_bb_color_down)
+) if show_bollinger else None
+
+# Lower Bollinger band fill color (based on your rocBullish boolean)
+df['lowerBandColor'] = df['rocBullish'].map(
+    lambda b: band_color(b, lower_bb_color_up, lower_bb_color_down)
+) if show_bollinger else None
+
+# Basis line (middle of BB)
+df['basisPlot'] = df['priceBasis'].where(show_bollinger and show_basis)
+
+# --- Plotting ---
+fig, ax = plt.subplots(figsize=(12,6))
+# Invisible plots (just to align x-axis)
+ax.plot(df.index, df['upperPriceInner'], alpha=0)
+ax.plot(df.index, df['upperPriceOuter'], alpha=0)
+ax.plot(df.index, df['lowerPriceInner'], alpha=0)
+ax.plot(df.index, df['lowerPriceOuter'], alpha=0)
+
+# Fill between upper bands
+if show_bollinger:
+    ax.fill_between(
+        df.index,
+        df['upperPriceInner'],
+        df['upperPriceOuter'],
+        color=list(df['upperBandColor']),
+        linewidth=0
+    )
+    # Fill between lower bands
+    ax.fill_between(
+        df.index,
+        df['lowerPriceInner'],
+        df['lowerPriceOuter'],
+        color=list(df['lowerBandColor']),
+        linewidth=0
+    )
+
+# Plot basis line
+if show_bollinger and show_basis:
+    ax.plot(df.index, df['basisPlot'], color=basis_color, label='Price Basis')
+
+# --- User‐selected MAs ---
+for i, (length, mtype, col, show_flag) in enumerate(zip(ma_lengths, ma_types, ma_colors, show_ma), start=1):
+    if show_all_ma and show_flag:
+        df[f'ma{i}'] = MA(df['close'], length, mtype)
+        ax.plot(df.index, df[f'ma{i}'], color=col, label=f'MA{i}')
+
+# --- Candle coloring logic (for your own candlestick chart) ---
+df['fastMa'] = MA(df['close'], fast_ma_len, fast_ma_type)
+df['slowMa'] = MA(df['close'], slow_ma_len, slow_ma_type)
+df['belowBoth']   = (df['close'] < df['fastMa']) & (df['close'] < df['slowMa'])
+df['betweenBoth'] = ((df['close'] >= df['fastMa']) & (df['close'] < df['slowMa'])) | \
+                    ((df['close'] < df['fastMa'])  & (df['close'] >= df['slowMa']))
+df['aboveBoth']   = (df['close'] >= df['fastMa']) & (df['close'] >= df['slowMa'])
+
+# --- RSI and Supertrend events (example boolean columns you already have) ---
+# df['rsiCrossOverLower'], df['rsiCrossUnderUpper'], df['deadCrossOver'], etc.
+
+# --- Alert conditions ---
+df['bullishSignal']  = df['maBullish'] & df['rocBullish']
+df['bearishSignal']  = df['maBearish'] & df['rocBearish']
+
+# You can now loop over df and trigger your own alerts:
+for idx, row in df.iterrows():
+    if row['bullishSignal']:
+        print(f"{idx}: Bullish Signal – Both Bollinger Bands are Bullish")
+    if row['bearishSignal']:
+        print(f"{idx}: Bearish Signal – Both Bollinger Bands are Bearish")
+
+ax.legend(loc='best')
+plt.show()
 
 
 
