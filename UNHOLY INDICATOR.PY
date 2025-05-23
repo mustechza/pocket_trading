@@ -1,4 +1,8 @@
 import streamlit as st
+import pandas as pd
+import numpy as np
+import pandas_ta as ta
+
 
 # ====== User Input Settings ======
 with st.sidebar.expander("Show/Hide ALL"):
@@ -119,3 +123,104 @@ with st.sidebar.expander("SuperTrend Settings"):
     quiet_threshold = st.number_input(
         "Silence Threshold", min_value=0.0, step=0.02, value=0.1
     )
+
+# Example usage: df should be a DataFrame with a 'close' column and datetime index
+# df = pd.read_csv('data.csv', parse_dates=True, index_col='date')
+
+def MA(series: pd.Series, length: int, ma_type: str) -> pd.Series:
+    """
+    Compute moving average of given type.
+    """
+    ma_type = ma_type.upper()
+    if ma_type == 'SMA':
+        return series.rolling(length).mean()
+    elif ma_type == 'EMA':
+        return series.ewm(span=length, adjust=False).mean()
+    elif ma_type == 'WMA':
+        return series.ta.wma(length)
+    elif ma_type == 'RMA':
+        # RMA is equivalent to Wilder's smoothing: same as EMA with alpha = 1/length
+        alpha = 1 / length
+        return series.ewm(alpha=alpha, adjust=False).mean()
+    else:
+        raise ValueError(f"Unknown MA type: {ma_type}")
+
+
+def compute_indicators(
+    df: pd.DataFrame,
+    rsi_cycle: int = 14,
+    use_rsi_smoothing: bool = False,
+    smoothing_length: int = 5,
+    smoothing_ma_type: str = 'EMA',
+    dz_size: float = 5.0,
+    supertrend_factor: float = 3.0,
+    supertrend_atr_length: int = 10,
+    quiet_threshold: float = 0.02,
+    price_band_width: float = 2.0
+) -> pd.DataFrame:
+    close = df['close']
+
+    # ROC
+    previous = close.shift(10)
+    roc = ((close - previous) / previous) * 100
+    df['roc'] = roc
+    df['roc_bullish'] = roc > 0
+    df['roc_bearish'] = roc < 0
+
+    # RSI and variants
+    df['rsi'] = ta.rsi(close, length=rsi_cycle)
+    half_cycle = max(1, rsi_cycle // 2)
+    df['short_rsi'] = ta.rsi(close, length=half_cycle)
+
+    # Smoothed RSI
+    if use_rsi_smoothing:
+        df['smoothed_rsi'] = MA(df['rsi'], smoothing_length, smoothing_ma_type)
+    else:
+        df['smoothed_rsi'] = df['rsi']
+
+    # RSI moving averages and dead zone
+    df['rsi_basis'] = df['rsi'].rolling(rsi_cycle).mean()
+    df['rsi96'] = df['rsi'].rolling(96).apply(lambda x: ta.wma(pd.Series(x), length=96).iat[-1])
+    df['rsi192'] = df['rsi'].rolling(192).apply(lambda x: ta.wma(pd.Series(x), length=192).iat[-1])
+
+    df['upper_dz'] = df['rsi_basis'] + dz_size
+    df['lower_dz'] = df['rsi_basis'] - dz_size
+
+    # RSI Bollinger Bands
+    df['rsi_dev'] = df['rsi'].rolling(rsi_cycle).std()
+    df['upper_rsi_band'] = df['rsi_basis'] + 1.8 * df['rsi_dev']
+    df['lower_rsi_band'] = df['rsi_basis'] - 1.8 * df['rsi_dev']
+
+    # Supertrend
+    st = ta.supertrend(df['high'], df['low'], close,
+                       length=supertrend_atr_length, multiplier=supertrend_factor)
+    df['supertrend'] = st[f'SUPERT_{supertrend_atr_length}_{supertrend_factor}']
+    df['supertrend_dir'] = st[f'SUPERTd_{supertrend_atr_length}_{supertrend_factor}']
+
+    # Noise Pulse
+    ma5 = close.ewm(span=5, adjust=False).mean()
+    ma6 = close.ewm(span=6, adjust=False).mean()
+    ma7 = close.ewm(span=7, adjust=False).mean()
+    noise_pulse = (ma5 - ma6).abs() + (ma6 - ma7).abs()
+    df['noise_pulse'] = noise_pulse
+    df['is_silent'] = noise_pulse < quiet_threshold
+
+    # Supertrend direction flags
+    df['super_up'] = df['supertrend_dir'] < 0
+    df['super_down'] = df['supertrend_dir'] >= 0
+
+    # Price Bollinger Bands
+    df['price_basis'] = close.rolling(rsi_cycle).apply(lambda x: ta.wma(pd.Series(x), length=rsi_cycle).iat[-1])
+    df['price_inner_dev'] = 2.4 * close.rolling(rsi_cycle).std()
+    df['price_outer_dev'] = price_band_width * close.rolling(rsi_cycle).std()
+    df['upper_price_inner'] = df['price_basis'] + df['price_inner_dev']
+    df['lower_price_inner'] = df['price_basis'] - df['price_inner_dev']
+    df['upper_price_outer'] = df['price_basis'] + df['price_outer_dev']
+    df['lower_price_outer'] = df['price_basis'] - df['price_outer_dev']
+
+    return df
+
+
+
+
+
